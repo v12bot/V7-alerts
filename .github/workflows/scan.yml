@@ -1,0 +1,35 @@
+name: scan
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a test notification (true/false)"
+        default: "true"
+concurrency:
+  group: scan
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas numpy requests
+      - name: Scan and notify
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TEST: ${{ github.event.inputs.test }}
+        run: python scanner.py
+      - name: Save state
+        run: |
+          git config user.name "scanner"
+          git config user.email "scanner@users.noreply.github.com"
+          git add state.json || true
+          git diff --cached --quiet || (git commit -m "state" && git push)
