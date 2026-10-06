@@ -292,8 +292,8 @@ def evaluate(sym, cfg, now):
             tpz = tp1_at(ez, now)
             if ez < stop and tpz is not None:
                 zone, rr_z = (lo, hi), (ez - tpz) / (stop - ez)
-    best = max([x for x in (rr_b, rr_z) if x is not None], default=None)
-    if best is None or best < cfg.min_rr: return cands, ptw, True
+    if rr_b is None or rr_b < cfg.min_rr: return cands, ptw, True   # alert only on break-level R:R; the zone is info only
+    best = rr_b
 
     word, pct = oi_verdict(fetch_oi(sym), s["time"], cfg)
     oi_txt = "unverified, check chart" if word == "unverified" else f"{word} {pct:+.1f}% since the sweep"
@@ -326,7 +326,7 @@ def describe(c):
     if c["rr_b"] is not None:
         lines.append(f"  R:R if it breaks at the level {c['rr_b']:.2f} (the real 5m close will be a bit worse)")
     if c["zone"] is not None:
-        lines.append(f"  retrace zone {c['zone'][0]:.6g}-{c['zone'][1]:.6g} (FVG in the 0.5-0.618 fib), R:R at zone middle {c['rr_z']:.2f}")
+        lines.append(f"  retrace zone (info only) {c['zone'][0]:.6g}-{c['zone'][1]:.6g}, FVG in the 0.5-0.618 fib")
     lines.append(f"  OI: {c['oi_txt']} | check displacement, OI and CVD at the break | sweep {c['sweep']}")
     return "\n".join(lines)
 
