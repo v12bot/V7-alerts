@@ -1,6 +1,7 @@
 # ================= V7 ALERT SCANNER (runs on GitHub, pushes to your phone via ntfy) =================
 # Mechanical V7 using ONLY what you answered. Anything you left "by eye" is a
 # PLACEHOLDER (marked PH). It gives SETUPS, it does NOT place trades.
+# v2: robust downloader (retries + completeness check, fewer threads).
 import time, requests
 import numpy as np, pandas as pd
 from collections import Counter
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 
 SCAN_DAYS = 6                                   # history used by the live finder
 TZ = "America/Toronto"
+MIN_FRAC = 0.97                                 # a coin's 5m data must be at least this complete
+WORKERS = 4
 
 @dataclass
 class Cfg:
@@ -47,12 +50,25 @@ def _mexc(sym, ms0, ms1):
     rows, s = [], ms0
     while s < ms1:
         e = min(s + 6 * 86400_000, ms1)
-        k = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{sym.replace('USDT', '')}_USDT",
-                         params=dict(interval="Min5", start=s // 1000, end=e // 1000), timeout=20).json().get("data") or {}
-        if k.get("time"):
-            rows += list(zip(np.array(k["time"], float) * 1000, k["open"], k["high"], k["low"], k["close"]))
+        need = (e - s) / 300_000
+        ok = False
+        for attempt in range(5):
+            try:
+                j = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{sym.replace('USDT', '')}_USDT",
+                                 params=dict(interval="Min5", start=s // 1000, end=e // 1000), timeout=20).json()
+                k = j.get("data") or {}
+                t = k.get("time") or []
+                if j.get("code") == 0 and len(t) >= 0.97 * need:
+                    rows += list(zip(np.array(t, float) * 1000, k["open"], k["high"], k["low"], k["close"]))
+                    ok = True
+                    break
+            except Exception:
+                pass
+            time.sleep(1 + attempt)
+        if not ok:
+            raise RuntimeError("incomplete chunk")
         s = e
-        time.sleep(0.1)
+        time.sleep(0.15)
     return _frame(rows, ["t", "o", "h", "l", "c"], ms0, ms1)
 
 def _okx(sym, ms0, ms1):
@@ -79,12 +95,15 @@ def _gate(sym, ms0, ms1):
         time.sleep(0.1)
     return _frame(rows, ["t", "o", "h", "l", "c"], ms0, ms1)
 
-def fetch_window(sym, t0, t1):
+def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
+    """Returns (data, source), or (None, None) if no source gives complete-enough data."""
     ms0, ms1 = int(t0.timestamp() * 1000), int(t1.timestamp() * 1000)
+    need = (ms1 - ms0) / 300_000
     for name, f in (("mexc", _mexc), ("okx", _okx), ("gate", _gate)):
         try:
             df = f(sym, ms0, ms1)
-            if df is not None and len(df) > 100: return df.iloc[:-1], name
+            if df is not None and len(df) > 100 and (len(df) - 1) >= min_frac * need:
+                return df.iloc[:-1], name
         except Exception:
             pass
     return None, None
@@ -226,7 +245,7 @@ TEST = os.environ.get("TEST", "").lower() == "true"
 MAX_ALERTS = 3
 
 def evaluate(sym, cfg, now):
-    """returns (list of candidate dicts, got_data)"""
+    """returns (list of candidate dicts, got_complete_data)"""
     out = []
     d5, src = fetch_window(sym, now - pd.Timedelta(days=SCAN_DAYS), now)
     if d5 is None: return out, False
@@ -254,7 +273,7 @@ def evaluate(sym, cfg, now):
         if risk <= 0: continue
         # fib TP1 (info/placeholder swing low: lowest low of the 14 days before the swept high)
         try:
-            d14o, _s = fetch_window(sym, s["sweep_time"] - pd.Timedelta(days=14), s["sweep_time"] + pd.Timedelta(hours=1))
+            d14o, _s = fetch_window(sym, s["sweep_time"] - pd.Timedelta(days=14), s["sweep_time"] + pd.Timedelta(hours=1), min_frac=0.95)
         except Exception:
             d14o = None
         if d14o is None or len(d14o) < 100: continue
@@ -309,7 +328,7 @@ def main():
     except Exception: state = {}
     seen = state.get("seen", {})
     results, with_data = [], 0
-    with cf.ThreadPoolExecutor(max_workers=8) as ex:
+    with cf.ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futs = {ex.submit(evaluate, sym, cfg, now): sym for sym in ALL_COINS}
         for f in cf.as_completed(futs):
             try:
@@ -318,11 +337,11 @@ def main():
             except Exception as e:
                 print("error", futs[f], type(e).__name__, e)
     results.sort(key=lambda c: (c["status"] != "TRIGGERED", -c["rr"]))
-    print(f"coins {len(ALL_COINS)} | with data {with_data} | candidates that can reach 2:1: {len(results)}")
+    print(f"coins {len(ALL_COINS)} | with COMPLETE data {with_data} | candidates that can reach 2:1: {len(results)}")
     fresh = [c for c in results if seen.get(c["key"]) != c["status"]]
     if TEST:
         top = (results[:MAX_ALERTS] or [])
-        push("V7 scanner TEST", "Test message. " + (("Current top:\n" + "\n".join(describe(c) for c in top)) if top else "No setups can reach 2:1 right now."))
+        push("V7 scanner TEST", f"Test message. Coins with complete data: {with_data} of {len(ALL_COINS)}. " + (("Current top:\n" + "\n".join(describe(c) for c in top)) if top else "No setups can reach 2:1 right now."))
     elif fresh:
         top = fresh[:MAX_ALERTS]
         push(f"V7: {len(top)} setup{'s' if len(top) > 1 else ''} (top by R:R)", "\n\n".join(describe(c) for c in top), priority="high")
@@ -332,10 +351,10 @@ def main():
     # daily heartbeat (after 09:00 Toronto)
     today = now.tz_convert(TZ).strftime("%Y-%m-%d")
     if now.tz_convert(TZ).hour >= 9 and state.get("heartbeat") != today and not TEST:
-        push("V7 scanner alive", f"Scanned {with_data} of {len(ALL_COINS)} coins with data. {len(results)} live setups can reach 2:1 inside their zone right now.", priority="low", tags="white_check_mark")
+        push("V7 scanner alive", f"{with_data} of {len(ALL_COINS)} coins had complete data. {len(results)} live setups can reach 2:1 inside their zone right now.", priority="low", tags="white_check_mark")
         state["heartbeat"] = today
-    if with_data < len(ALL_COINS) * 0.4 and state.get("datawarn") != today:
-        push("V7 scanner: data problem", f"Only {with_data} of {len(ALL_COINS)} coins returned data.", priority="high", tags="warning")
+    if with_data < len(ALL_COINS) * 0.8 and state.get("datawarn") != today:
+        push("V7 scanner: data problem", f"Only {with_data} of {len(ALL_COINS)} coins had complete data. Do not trust quiet periods.", priority="high", tags="warning")
         state["datawarn"] = today
     state["seen"] = seen
     json.dump(state, open(STATE_FILE, "w"))
