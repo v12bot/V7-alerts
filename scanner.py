@@ -39,6 +39,15 @@ SRC_TAG = {"binance": "BN", "binance-gapfill": "BN~", "mexc": "MX", "mexc-gapfil
            "bitget": "BG", "bitget-gapfill": "BG~", "bingx": "BX", "bingx-gapfill": "BX~"}   # tag shown on each alert line
 BN_KIND, BY_KIND = {}, {}  # "perp" or "spot": which feed a coin was read from
 BN_ALIAS = {"BEAM": "BEAMX"}   # Binance lists BEAM as BEAMX
+# Coins that were renamed on exchanges. Your list keeps the old name; the scan looks up the new one.
+ALIAS = {"TON": "GRAM",    # Toncoin renamed to Gram (June 2026)
+         "IP": "DATA",     # Story renamed to Data Network (July 2026); Streamr's old DATA became DATAOLD
+         "ICX": "SODA"}    # ICON swapped to SODA (swap deadline Sept 30 2026)
+# Coins known to be dead, shown next to them in the test message instead of a guess.
+KNOWN = {"STG": "Stargate merged into ZRO", "BLAST": "Blast network shut down, being delisted", "HFT": "Hashflow delisted on Binance"}
+def _base(sym):
+    b = sym.replace("USDT", "")
+    return ALIAS.get(b, b)
 PFX = (("", 1.0), ("1000", 1e3), ("10000", 1e4), ("1000000", 1e6), ("1M", 1e6))   # multiplier contract names
 INSTR = {}                # exchange -> {coin name: that exchange's own symbol}; None if its list could not be loaded
 BY_HOSTS = ["https://api.bybit.com", "https://api.bytick.com"]
@@ -119,7 +128,7 @@ def _bn_get(url, symbol, ms0, ms1):
 def _binance(sym, ms0, ms1):
     """Binance perpetual (exact symbol from its list), then Binance spot."""
     global _BN_FUT_BLOCKED
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("binance", base)
     tries = []
     if not _BN_FUT_BLOCKED:
@@ -155,7 +164,7 @@ def _bybit(sym, ms0, ms1):
     """Bybit perpetual (exact symbol from its list), then Bybit spot."""
     global _BY_BLOCKED
     if _BY_BLOCKED: raise RuntimeError("bybit blocked")
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("bybit", base)
     tries = []
     if res == "guess":
@@ -174,7 +183,7 @@ def _bybit(sym, ms0, ms1):
     raise RuntimeError("no bybit data")
 
 def _mexc(sym, ms0, ms1):
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("mexc", base)
     if res is None: raise NotListed()
     name, div = (res if res != "guess" else (base + "_USDT", 1.0))
@@ -204,7 +213,7 @@ def _mexc(sym, ms0, ms1):
     return _scale(_frame(rows, ms0, ms1), div)
 
 def _okx(sym, ms0, ms1):
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("okx", base)
     if res is None: raise NotListed()
     inst, div = (res if res != "guess" else (f"{base}-USDT-SWAP", 1.0))
@@ -220,7 +229,7 @@ def _okx(sym, ms0, ms1):
     return _scale(_frame(rows, ms0, ms1), div)
 
 def _gate(sym, ms0, ms1):
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("gate", base)
     if res is None: raise NotListed()
     name, div = (res if res != "guess" else (base + "_USDT", 1.0))
@@ -235,7 +244,7 @@ def _gate(sym, ms0, ms1):
     return _scale(_frame(rows, ms0, ms1), div)
 
 def _bitget(sym, ms0, ms1):
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("bitget", base)
     if res is None: raise NotListed()
     name, div = (res if res != "guess" else (base + "USDT", 1.0))
@@ -246,7 +255,7 @@ def _bitget(sym, ms0, ms1):
     return _scale(_frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in d], ms0, ms1), div)
 
 def _bingx(sym, ms0, ms1):
-    base = sym.replace("USDT", "")
+    base = _base(sym)
     res = resolve("bingx", base)
     if res is None: raise NotListed()
     name, div = (res if res != "guess" else (base + "-USDT", 1.0))
@@ -309,7 +318,8 @@ def evaluate(sym, now):
     day, h4, h1, m15 = [(price / b - 1) * 100 for b in back]
     if src and src.startswith("binance") and BN_KIND.get(sym) == "spot": src = src.replace("binance", "binance-spot", 1)
     if src and src.startswith("bybit") and BY_KIND.get(sym) == "spot": src = src.replace("bybit", "bybit-spot", 1)
-    return dict(sym=sym.replace("USDT", ""), price=price, day=day, h4=h4, h1=h1, m15=m15, src=src,
+    b0 = sym.replace("USDT", "")
+    return dict(sym=b0 + (f" ({ALIAS[b0]})" if b0 in ALIAS else ""), price=price, day=day, h4=h4, h1=h1, m15=m15, src=src,
                 big=(day >= BIG_MOVE_PCT), ptw=(day >= PTW_PCT)), True
 
 # ---------------- alerts ----------------
@@ -385,7 +395,7 @@ def main():
     nl = [m for m in missing if not_listed(m)]
     nodata = [m for m in missing if m not in nl]
     miss_txt = ""
-    if nl: miss_txt += f"NOT FOUND on {', '.join(k for k, v in INSTR.items() if v)} ({len(nl)}): " + " | ".join(m.replace("USDT", "") + similar(m) for m in nl)
+    if nl: miss_txt += f"NOT FOUND on {', '.join(k for k, v in INSTR.items() if v)} ({len(nl)}): " + " | ".join(m.replace("USDT", "") + (f" [{KNOWN[m[:-4]]}]" if m[:-4] in KNOWN else similar(m)) for m in nl)
     if nodata: miss_txt += ("\n" if miss_txt else "") + f"LISTED BUT NO DATA ({len(nodata)}) (bn=Binance by=Bybit m=MEXC o=OKX g=Gate bg=Bitget bx=BingX; no=not listed, x=no data/blocked, %=share of candles, stale=not trading): " + " | ".join(m.replace("USDT", "") + " " + NOTES.get(m, "?") for m in nodata)
     print("NO DATA:", miss_txt)
     head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data).\n"
