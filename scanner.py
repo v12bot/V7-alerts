@@ -12,7 +12,7 @@
 #   3b Also lists Binance coins NOT on your list that are up 20%+ in Binance's 24h window (one alert per coin per day).
 #   4 Shows the session window and dead zone (PDF section 0).
 #
-# Data: Binance first (perpetual, then spot), then MEXC, OKX, Gate. The alert does not say which one was used.
+# Data: Binance first (perpetual, then spot), then Bybit, MEXC, OKX, Gate. The alert does not say which one was used.
 #
 # Progression stages (the stage names are NOT in the V4A+ PDF):
 #   PRE-TOP WATCH (this script, up 20%+)  ->  EXHAUSTION  ->  WATCH ALERT  ->  ENTRY ALERT
@@ -32,7 +32,7 @@ BIG_MOVE_PCT = 70.0    # PDF F1: moves of 70%+ need 1H lower high + failed recla
 MAX_PTW = 20           # most PRE-TOP WATCH names in one message
 MAX_BYTES = 3800       # ntfy limit is 4096 bytes
 
-# ---------------- data (Binance first, then MEXC, OKX, Gate) ----------------
+# ---------------- data (Binance, Bybit, then MEXC, OKX, Gate) ----------------
 def _frame(rows, ms0, ms1):
     df = pd.DataFrame(rows, columns=["t", "o", "h", "l", "c", "v"])
     for c in ("o", "h", "l", "c", "v"): df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -46,7 +46,8 @@ BN_ALIAS = {"BEAM": "BEAMX"}   # Binance lists BEAM as BEAMX
 NOTES = {}                # why a coin had no data (shown in the test message)
 BN_KIND = {}              # "perp" or "spot": which Binance feed a coin was read from
 SRC_TAG = {"binance": "BN", "binance-gapfill": "BN~", "mexc": "MX", "mexc-gapfill": "MX~", "okx": "OK", "okx-gapfill": "OK~",
-           "gate": "GT", "gate-gapfill": "GT~", "binance-spot": "BNs", "binance-spot-gapfill": "BNs~"}
+           "gate": "GT", "gate-gapfill": "GT~", "binance-spot": "BNs", "binance-spot-gapfill": "BNs~",
+           "bybit": "BY", "bybit-gapfill": "BY~", "bybit-spot": "BYs", "bybit-spot-gapfill": "BYs~"}
 _BN_FUT_BLOCKED = False   # set True if Binance futures refuses this server (some regions get HTTP 451/403)
 
 def _bn_get(url, sym, ms0, ms1):
@@ -78,6 +79,38 @@ def _binance(sym, ms0, ms1):
             BN_KIND[sym] = "perp" if "fapi" in url else "spot"
             return df
     raise RuntimeError("not on binance")
+
+BY_HOSTS = ["https://api.bybit.com", "https://api.bytick.com"]
+BY_KIND = {}              # "perp" or "spot": which Bybit feed a coin was read from
+_BY_BLOCKED = False       # set True if Bybit refuses this server (it blocks some regions)
+
+def _by_try(category, symbol, ms0, ms1):
+    for host in BY_HOSTS:
+        r = requests.get(host + "/v5/market/kline", timeout=15,
+                         params=dict(category=category, symbol=symbol, interval="5", start=ms0, end=ms1, limit=1000))
+        if r.status_code in (403, 451): continue
+        if r.status_code != 200: return None
+        j = r.json()
+        if j.get("retCode") != 0: return None
+        return (j.get("result") or {}).get("list") or None
+    return "blocked"
+
+def _bybit(sym, ms0, ms1):
+    """Bybit USDT perpetual first (also the 1000x / 10000x / 1M contract names), then Bybit spot."""
+    global _BY_BLOCKED
+    if _BY_BLOCKED: raise RuntimeError("bybit blocked")
+    base = sym.replace("USDT", "")
+    for cat, pfx, div in (("linear", "", 1.0), ("linear", "1000", 1e3), ("linear", "10000", 1e4),
+                          ("linear", "1000000", 1e6), ("linear", "1M", 1e6), ("spot", "", 1.0)):
+        j = _by_try(cat, pfx + base + "USDT", ms0, ms1)
+        if j == "blocked":
+            _BY_BLOCKED = True; raise RuntimeError("bybit blocked")
+        if j:
+            df = _frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in j], ms0, ms1)
+            if div != 1.0: df[["o", "h", "l", "c"]] = df[["o", "h", "l", "c"]] / div   # show the real price
+            BY_KIND[sym] = "spot" if cat == "spot" else "perp"
+            return df
+    raise RuntimeError("not on bybit")
 
 def _mexc(sym, ms0, ms1):
     rows, s = [], ms0
@@ -137,8 +170,8 @@ def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
     grid = pd.date_range(start=pd.to_datetime(ms0, unit="ms", utc=True).ceil("5min"),
                          end=pd.to_datetime(ms1, unit="ms", utc=True), freq="5min")
     notes = []
-    for name, f in (("binance", _binance), ("mexc", _mexc), ("okx", _okx), ("gate", _gate)):
-        tag = name[0]
+    for name, f in (("binance", _binance), ("bybit", _bybit), ("mexc", _mexc), ("okx", _okx), ("gate", _gate)):
+        tag = {"binance": "bn", "bybit": "by", "mexc": "m", "okx": "o", "gate": "g"}[name]
         try:
             df = f(sym, ms0, ms1)
         except Exception:
@@ -189,6 +222,7 @@ def evaluate(sym, now):
     if any(not np.isfinite(v) or v <= 0 for v in [price] + back): return None, False
     day, h4, h1, m15 = [(price / b - 1) * 100 for b in back]
     if src and src.startswith("binance") and BN_KIND.get(sym) == "spot": src = src.replace("binance", "binance-spot", 1)
+    if src and src.startswith("bybit") and BY_KIND.get(sym) == "spot": src = src.replace("bybit", "bybit-spot", 1)
     return dict(sym=sym.replace("USDT", ""), price=price, day=day, h4=h4, h1=h1, m15=m15, src=src,
                 big=(day >= BIG_MOVE_PCT), ptw=(day >= PTW_PCT)), True
 
@@ -293,7 +327,7 @@ def main():
     guess_miss = [m for m in missing if m in guess_set]
     guess_txt = (f"\nGUESS_COINS with no data ({len(guess_miss)}): " + " ".join(m.replace("USDT", "") for m in guess_miss)) if guess_miss else ""
     if TEST:
-        body = (head + ("No data for " + str(len(missing)) + " coins (b=Binance m=MEXC o=OKX g=Gate; x=no data, %=share of candles, stale=not trading):\n"
+        body = (head + ("No data for " + str(len(missing)) + " coins (bn=Binance by=Bybit m=MEXC o=OKX g=Gate; x=no data, %=share of candles, stale=not trading):\n"
                                       + miss_txt if missing else "No data for 0 coins")
                 + guess_txt + "\n\n" + STAGES + "\n\n")
         body += ("PRE-TOP WATCH (up 20%+ in 24h):\n" + "\n".join(line(c) for c in ptws[:MAX_PTW])
