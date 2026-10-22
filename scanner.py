@@ -226,13 +226,14 @@ def main():
         with open(STATE_FILE) as f: state = json.load(f)
     except Exception: state = {}
     seen = state.get("ptw", {})
-    results, with_data = [], 0
+    results, with_data, missing = [], 0, []
     with cf.ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futs = {ex.submit(evaluate, sym, now): sym for sym in ALL_COINS}
         for fut in cf.as_completed(futs):
             try:
                 out, ok = fut.result()
                 with_data += 1 if ok else 0
+                if not ok: missing.append(futs[fut].replace('USDT', ''))
                 if out: results.append(out)
             except Exception as e:
                 print("error", futs[fut], type(e).__name__, e)
@@ -246,11 +247,14 @@ def main():
     ptws = sorted((c for c in results if c["ptw"]), key=lambda c: (-c["day"], c["sym"]))
     fresh = [c for c in ptws if f"{today}|{c['sym']}" not in seen]
     print(f"coins scanned {len(ALL_COINS)} | with usable data {with_data} | up {PTW_PCT:.0f}%+ in 24h: {len(ptws)}")
+    missing.sort()
+    print("NO DATA:", " ".join(missing))
     head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data).\n"
             f"Session {tnow.strftime('%H:%M')} Toronto: {session_label(tnow)}\n")
 
     if TEST:
-        body = head + "\n" + STAGES + "\n\n"
+        body = (head + "No data for " + str(len(missing)) + " coins: " + (" ".join(missing) if missing else "none")
+                + "\n\n" + STAGES + "\n\n")
         body += ("PRE-TOP WATCH (up 20%+ in 24h):\n" + "\n".join(line(c) for c in ptws[:MAX_PTW])
                  if ptws else "No coin is up 20%+ in 24h right now.")
         sample = sorted(results, key=lambda c: (-c["day"], c["sym"]))[:3]
