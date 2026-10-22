@@ -11,7 +11,7 @@
 #   3 Flags a 70%+ 24h move: needs 1H lower high + failed reclaim (PDF F1).
 #   4 Runs 24/7 (Toronto time shown on each alert). No session or dead-zone gating: the framework's session rules are applied by you at chart time.
 #
-# Data: Binance first (perpetual, then spot), then Bybit, MEXC, OKX, Gate. The alert does not say which one was used.
+# Data: Binance first (perpetual, then spot), then Bybit, MEXC, OKX, Gate, Bitget, BingX. The alert does not say which one was used.
 #
 # Progression stages (the stage names are NOT in the V4A+ PDF):
 #   PRE-TOP WATCH (this script, up 20%+)  ->  EXHAUSTION  ->  WATCH ALERT  ->  ENTRY ALERT
@@ -31,11 +31,12 @@ BIG_MOVE_PCT = 70.0    # PDF F1: moves of 70%+ need 1H lower high + failed recla
 MAX_PTW = 20           # most PRE-TOP WATCH names in one message
 MAX_BYTES = 3800       # ntfy limit is 4096 bytes
 
-# ---------------- data (Binance, Bybit, then MEXC, OKX, Gate) ----------------
+# ---------------- data (Binance, Bybit, MEXC, OKX, Gate, Bitget, BingX) ----------------
 NOTES = {}                # why a coin had no data (shown in the test message)
 SRC_TAG = {"binance": "BN", "binance-gapfill": "BN~", "mexc": "MX", "mexc-gapfill": "MX~", "okx": "OK", "okx-gapfill": "OK~",
            "gate": "GT", "gate-gapfill": "GT~", "binance-spot": "BNs", "binance-spot-gapfill": "BNs~",
-           "bybit": "BY", "bybit-gapfill": "BY~", "bybit-spot": "BYs", "bybit-spot-gapfill": "BYs~"}   # tag shown on each alert line
+           "bybit": "BY", "bybit-gapfill": "BY~", "bybit-spot": "BYs", "bybit-spot-gapfill": "BYs~",
+           "bitget": "BG", "bitget-gapfill": "BG~", "bingx": "BX", "bingx-gapfill": "BX~"}   # tag shown on each alert line
 BN_KIND, BY_KIND = {}, {}  # "perp" or "spot": which feed a coin was read from
 BN_ALIAS = {"BEAM": "BEAMX"}   # Binance lists BEAM as BEAMX
 PFX = (("", 1.0), ("1000", 1e3), ("10000", 1e4), ("1000000", 1e6), ("1M", 1e6))   # multiplier contract names
@@ -96,7 +97,13 @@ def load_instruments():
     def gt():
         j = get("https://api.gateio.ws/api/v4/futures/usdt/contracts")
         return {x["name"][:-5]: x["name"] for x in j if not x.get("in_delisting") and x["name"].endswith("_USDT")}
-    for k, fn in (("binance", bn), ("bybit", by), ("mexc", mx), ("okx", ok), ("gate", gt)):
+    def bg():
+        j = get("https://api.bitget.com/api/v2/mix/market/contracts", params=dict(productType="USDT-FUTURES"))
+        return {x["symbol"][:-4]: x["symbol"] for x in j["data"] if x["symbol"].endswith("USDT") and x.get("symbolStatus", "normal") == "normal"}
+    def bx():
+        j = get("https://open-api.bingx.com/openApi/swap/v2/quote/contracts")
+        return {x["symbol"][:-5]: x["symbol"] for x in j["data"] if x["symbol"].endswith("-USDT") and x.get("status", 1) == 1}
+    for k, fn in (("binance", bn), ("bybit", by), ("mexc", mx), ("okx", ok), ("gate", gt), ("bitget", bg), ("bingx", bx)):
         try: INSTR[k] = fn() or None
         except Exception as e:
             INSTR[k] = None; print("instrument list failed", k, type(e).__name__, e)
@@ -227,6 +234,28 @@ def _gate(sym, ms0, ms1):
         time.sleep(0.1)
     return _scale(_frame(rows, ms0, ms1), div)
 
+def _bitget(sym, ms0, ms1):
+    base = sym.replace("USDT", "")
+    res = resolve("bitget", base)
+    if res is None: raise NotListed()
+    name, div = (res if res != "guess" else (base + "USDT", 1.0))
+    r = requests.get("https://api.bitget.com/api/v2/mix/market/candles", timeout=20,
+                     params=dict(symbol=name, productType="USDT-FUTURES", granularity="5m", startTime=ms0, endTime=ms1, limit=1000))
+    d = r.json().get("data") if r.status_code == 200 else None
+    if not d: raise RuntimeError("no bitget data")
+    return _scale(_frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in d], ms0, ms1), div)
+
+def _bingx(sym, ms0, ms1):
+    base = sym.replace("USDT", "")
+    res = resolve("bingx", base)
+    if res is None: raise NotListed()
+    name, div = (res if res != "guess" else (base + "-USDT", 1.0))
+    r = requests.get("https://open-api.bingx.com/openApi/swap/v3/quote/klines", timeout=20,
+                     params=dict(symbol=name, interval="5m", startTime=ms0, endTime=ms1, limit=1440))
+    d = r.json().get("data") if r.status_code == 200 else None
+    if not d: raise RuntimeError("no bingx data")
+    return _scale(_frame([(x["time"], x["open"], x["high"], x["low"], x["close"], x.get("volume", 0)) for x in d], ms0, ms1), div)
+
 def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
     """Returns (data, source), or (None, None). A source with all its candles is used as is. A thin coin
     (candles missing because nothing traded) is forward-filled, but only if it traded in the last 30 minutes."""
@@ -235,8 +264,9 @@ def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
     grid = pd.date_range(start=pd.to_datetime(ms0, unit="ms", utc=True).ceil("5min"),
                          end=pd.to_datetime(ms1, unit="ms", utc=True), freq="5min")
     notes = []
-    for name, f in (("binance", _binance), ("bybit", _bybit), ("mexc", _mexc), ("okx", _okx), ("gate", _gate)):
-        tag = {"binance": "bn", "bybit": "by", "mexc": "m", "okx": "o", "gate": "g"}[name]
+    for name, f in (("binance", _binance), ("bybit", _bybit), ("mexc", _mexc), ("okx", _okx), ("gate", _gate),
+                    ("bitget", _bitget), ("bingx", _bingx)):
+        tag = {"binance": "bn", "bybit": "by", "mexc": "m", "okx": "o", "gate": "g", "bitget": "bg", "bingx": "bx"}[name]
         try:
             df = f(sym, ms0, ms1)
         except NotListed:
@@ -340,7 +370,7 @@ def main():
     print(f"coins scanned {len(ALL_COINS)} | with usable data {with_data} | up {PTW_PCT:.0f}%+ in 24h: {len(ptws)}")
     print(f"PTW fresh={len(fresh)}")
     missing.sort()
-    tagx = {"bn": "binance", "by": "bybit", "m": "mexc", "o": "okx", "g": "gate"}
+    tagx = {"bn": "binance", "by": "bybit", "m": "mexc", "o": "okx", "g": "gate", "bg": "bitget", "bx": "bingx"}
     def not_listed(m):
         toks = NOTES.get(m, "").split()
         loaded = [t for t in toks if INSTR.get(tagx.get(t.split(":")[0])) is not None]
@@ -356,7 +386,7 @@ def main():
     nodata = [m for m in missing if m not in nl]
     miss_txt = ""
     if nl: miss_txt += f"NOT FOUND on {', '.join(k for k, v in INSTR.items() if v)} ({len(nl)}): " + " | ".join(m.replace("USDT", "") + similar(m) for m in nl)
-    if nodata: miss_txt += ("\n" if miss_txt else "") + f"LISTED BUT NO DATA ({len(nodata)}) (bn=Binance by=Bybit m=MEXC o=OKX g=Gate; no=not listed, x=no data/blocked, %=share of candles, stale=not trading): " + " | ".join(m.replace("USDT", "") + " " + NOTES.get(m, "?") for m in nodata)
+    if nodata: miss_txt += ("\n" if miss_txt else "") + f"LISTED BUT NO DATA ({len(nodata)}) (bn=Binance by=Bybit m=MEXC o=OKX g=Gate bg=Bitget bx=BingX; no=not listed, x=no data/blocked, %=share of candles, stale=not trading): " + " | ".join(m.replace("USDT", "") + " " + NOTES.get(m, "?") for m in nodata)
     print("NO DATA:", miss_txt)
     head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data).\n"
             f"Scan {tnow.strftime('%H:%M')} Toronto time. The scanner runs 24/7; no session gating.\n"
