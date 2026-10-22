@@ -9,15 +9,14 @@
 #   2 PRE-TOP WATCH: any coin up 20%+ in the rolling 24 hours is sent to you. Tracking starts there (shorts).
 #     One alert per coin per day.
 #   3 Flags a 70%+ 24h move: needs 1H lower high + failed reclaim (PDF F1).
-#   3b Also lists Binance coins NOT on your list that are up 20%+ in Binance's 24h window (one alert per coin per day).
-#   4 Shows the session window and dead zone (PDF section 0).
+#   4 Runs 24/7 (Toronto time shown on each alert). No session or dead-zone gating: the framework's session rules are applied by you at chart time.
 #
 # Data: Binance first (perpetual, then spot), then Bybit, MEXC, OKX, Gate. The alert does not say which one was used.
 #
 # Progression stages (the stage names are NOT in the V4A+ PDF):
 #   PRE-TOP WATCH (this script, up 20%+)  ->  EXHAUSTION  ->  WATCH ALERT  ->  ENTRY ALERT
 #   The last three are chart reads. The script does not compute them.
-import os, json, time, requests, concurrent.futures as cf
+import os, json, time, difflib, requests, concurrent.futures as cf
 import numpy as np, pandas as pd
 
 SCAN_DAYS = 2          # 5m history pulled per coin (Day needs 24h; a little extra for gaps)
@@ -33,6 +32,23 @@ MAX_PTW = 20           # most PRE-TOP WATCH names in one message
 MAX_BYTES = 3800       # ntfy limit is 4096 bytes
 
 # ---------------- data (Binance, Bybit, then MEXC, OKX, Gate) ----------------
+NOTES = {}                # why a coin had no data (shown in the test message)
+SRC_TAG = {"binance": "BN", "binance-gapfill": "BN~", "mexc": "MX", "mexc-gapfill": "MX~", "okx": "OK", "okx-gapfill": "OK~",
+           "gate": "GT", "gate-gapfill": "GT~", "binance-spot": "BNs", "binance-spot-gapfill": "BNs~",
+           "bybit": "BY", "bybit-gapfill": "BY~", "bybit-spot": "BYs", "bybit-spot-gapfill": "BYs~"}   # tag shown on each alert line
+BN_KIND, BY_KIND = {}, {}  # "perp" or "spot": which feed a coin was read from
+BN_ALIAS = {"BEAM": "BEAMX"}   # Binance lists BEAM as BEAMX
+PFX = (("", 1.0), ("1000", 1e3), ("10000", 1e4), ("1000000", 1e6), ("1M", 1e6))   # multiplier contract names
+INSTR = {}                # exchange -> {coin name: that exchange's own symbol}; None if its list could not be loaded
+BY_HOSTS = ["https://api.bybit.com", "https://api.bytick.com"]
+FAPI = "https://fapi.binance.com/fapi/v1/klines"
+BSPOT = "https://data-api.binance.vision/api/v3/klines"
+_BN_FUT_BLOCKED = False   # set True if Binance futures refuses this server (some regions get HTTP 451/403)
+_BY_BLOCKED = False       # set True if Bybit refuses this server
+
+class NotListed(Exception):
+    pass
+
 def _frame(rows, ms0, ms1):
     df = pd.DataFrame(rows, columns=["t", "o", "h", "l", "c", "v"])
     for c in ("o", "h", "l", "c", "v"): df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -42,47 +58,80 @@ def _frame(rows, ms0, ms1):
     df = df[~df.index.duplicated()]
     return df[(df.index >= pd.to_datetime(ms0, unit="ms", utc=True)) & (df.index <= pd.to_datetime(ms1, unit="ms", utc=True))][["o", "h", "l", "c", "v"]]
 
-BN_ALIAS = {"BEAM": "BEAMX"}   # Binance lists BEAM as BEAMX
-NOTES = {}                # why a coin had no data (shown in the test message)
-BN_KIND = {}              # "perp" or "spot": which Binance feed a coin was read from
-SRC_TAG = {"binance": "BN", "binance-gapfill": "BN~", "mexc": "MX", "mexc-gapfill": "MX~", "okx": "OK", "okx-gapfill": "OK~",
-           "gate": "GT", "gate-gapfill": "GT~", "binance-spot": "BNs", "binance-spot-gapfill": "BNs~",
-           "bybit": "BY", "bybit-gapfill": "BY~", "bybit-spot": "BYs", "bybit-spot-gapfill": "BYs~"}
-_BN_FUT_BLOCKED = False   # set True if Binance futures refuses this server (some regions get HTTP 451/403)
+def _scale(df, div):
+    if div != 1.0: df[["o", "h", "l", "c"]] = df[["o", "h", "l", "c"]] / div   # show the real price for 1000x contracts
+    return df
 
-def _bn_get(url, sym, ms0, ms1):
-    r = requests.get(url, params=dict(symbol=sym, interval="5m", startTime=ms0, endTime=ms1, limit=1500), timeout=15)
+def resolve(exch, base):
+    """-> (exchange symbol, divisor), "guess" if that exchange's list is unavailable, or None if the coin is not listed there."""
+    m = INSTR.get(exch)
+    if m is None: return "guess"
+    if exch == "binance": base = BN_ALIAS.get(base, base)
+    for pfx, div in PFX:
+        if pfx + base in m: return m[pfx + base], div
+    return None
+
+def load_instruments():
+    """One call per exchange: which USDT perpetual coins it lists. Lets the scan use the exact symbol and skip coins that are not there."""
+    def get(url, **kw):
+        r = requests.get(url, timeout=20, **kw)
+        return r.json() if r.status_code == 200 else None
+    def bn():
+        j = get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+        return {x["symbol"][:-4]: x["symbol"] for x in j["symbols"] if x.get("contractType") == "PERPETUAL"
+                and x.get("quoteAsset") == "USDT" and x.get("status") == "TRADING"}
+    def by():
+        for host in BY_HOSTS:
+            r = requests.get(host + "/v5/market/instruments-info", params=dict(category="linear", limit=1000), timeout=20)
+            if r.status_code == 200:
+                return {x["symbol"][:-4]: x["symbol"] for x in r.json()["result"]["list"] if x.get("quoteCoin") == "USDT"
+                        and x.get("status") == "Trading" and x.get("contractType") == "LinearPerpetual"}
+        return None
+    def mx():
+        j = get("https://contract.mexc.com/api/v1/contract/detail")
+        return {x["symbol"][:-5]: x["symbol"] for x in j["data"] if x.get("quoteCoin") == "USDT" and x.get("state", 0) == 0}
+    def ok():
+        j = get("https://www.okx.com/api/v5/public/instruments", params=dict(instType="SWAP"))
+        return {x["instId"].split("-")[0]: x["instId"] for x in j["data"] if x["instId"].endswith("-USDT-SWAP") and x.get("state") == "live"}
+    def gt():
+        j = get("https://api.gateio.ws/api/v4/futures/usdt/contracts")
+        return {x["name"][:-5]: x["name"] for x in j if not x.get("in_delisting") and x["name"].endswith("_USDT")}
+    for k, fn in (("binance", bn), ("bybit", by), ("mexc", mx), ("okx", ok), ("gate", gt)):
+        try: INSTR[k] = fn() or None
+        except Exception as e:
+            INSTR[k] = None; print("instrument list failed", k, type(e).__name__, e)
+    print("instrument lists:", {k: (len(v) if v else None) for k, v in INSTR.items()})
+
+def _bn_get(url, symbol, ms0, ms1):
+    r = requests.get(url, params=dict(symbol=symbol, interval="5m", startTime=ms0, endTime=ms1, limit=1500), timeout=15)
     if r.status_code in (451, 403): return "blocked"
     if r.status_code != 200: return None
     j = r.json()
     return j if isinstance(j, list) and j else None
 
 def _binance(sym, ms0, ms1):
-    """Binance USDT perpetual first (also tries the 1000x contract name), then Binance spot market data."""
+    """Binance perpetual (exact symbol from its list), then Binance spot."""
     global _BN_FUT_BLOCKED
-    base = BN_ALIAS.get(sym.replace("USDT", ""), sym.replace("USDT", ""))
+    base = sym.replace("USDT", "")
+    res = resolve("binance", base)
     tries = []
     if not _BN_FUT_BLOCKED:
-        tries += [("https://fapi.binance.com/fapi/v1/klines", base + "USDT", 1.0),
-                  ("https://fapi.binance.com/fapi/v1/klines", "1000" + base + "USDT", 1000.0),
-                  ("https://fapi.binance.com/fapi/v1/klines", "1M" + base + "USDT", 1e6)]
-    tries += [("https://data-api.binance.vision/api/v3/klines", base + "USDT", 1.0)]
-    for url, s, div in tries:
-        j = _bn_get(url, s, ms0, ms1)
+        if res == "guess":
+            b = BN_ALIAS.get(base, base)
+            tries += [(FAPI, b + "USDT", 1.0), (FAPI, "1000" + b + "USDT", 1e3), (FAPI, "1M" + b + "USDT", 1e6)]
+        elif res:
+            tries += [(FAPI, res[0], res[1])]
+    tries += [(BSPOT, BN_ALIAS.get(base, base) + "USDT", 1.0)]
+    for url, s_, div in tries:
+        j = _bn_get(url, s_, ms0, ms1)
         if j == "blocked":
-            if "fapi" in url: _BN_FUT_BLOCKED = True
+            if url == FAPI: _BN_FUT_BLOCKED = True
             continue
         if j:
-            rows = [(x[0], x[1], x[2], x[3], x[4], x[5]) for x in j]
-            df = _frame(rows, ms0, ms1)
-            if div != 1.0: df[["o", "h", "l", "c"]] = df[["o", "h", "l", "c"]] / div   # 1000x contract: show the real price
-            BN_KIND[sym] = "perp" if "fapi" in url else "spot"
-            return df
-    raise RuntimeError("not on binance")
-
-BY_HOSTS = ["https://api.bybit.com", "https://api.bytick.com"]
-BY_KIND = {}              # "perp" or "spot": which Bybit feed a coin was read from
-_BY_BLOCKED = False       # set True if Bybit refuses this server (it blocks some regions)
+            BN_KIND[sym] = "perp" if url == FAPI else "spot"
+            return _scale(_frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in j], ms0, ms1), div)
+    if res is None: raise NotListed()
+    raise RuntimeError("no binance data")
 
 def _by_try(category, symbol, ms0, ms1):
     for host in BY_HOSTS:
@@ -96,23 +145,32 @@ def _by_try(category, symbol, ms0, ms1):
     return "blocked"
 
 def _bybit(sym, ms0, ms1):
-    """Bybit USDT perpetual first (also the 1000x / 10000x / 1M contract names), then Bybit spot."""
+    """Bybit perpetual (exact symbol from its list), then Bybit spot."""
     global _BY_BLOCKED
     if _BY_BLOCKED: raise RuntimeError("bybit blocked")
     base = sym.replace("USDT", "")
-    for cat, pfx, div in (("linear", "", 1.0), ("linear", "1000", 1e3), ("linear", "10000", 1e4),
-                          ("linear", "1000000", 1e6), ("linear", "1M", 1e6), ("spot", "", 1.0)):
-        j = _by_try(cat, pfx + base + "USDT", ms0, ms1)
+    res = resolve("bybit", base)
+    tries = []
+    if res == "guess":
+        tries += [("linear", p + base + "USDT", d) for p, d in PFX]
+    elif res:
+        tries += [("linear", res[0], res[1])]
+    tries += [("spot", base + "USDT", 1.0)]
+    for cat, s_, div in tries:
+        j = _by_try(cat, s_, ms0, ms1)
         if j == "blocked":
             _BY_BLOCKED = True; raise RuntimeError("bybit blocked")
         if j:
-            df = _frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in j], ms0, ms1)
-            if div != 1.0: df[["o", "h", "l", "c"]] = df[["o", "h", "l", "c"]] / div   # show the real price
             BY_KIND[sym] = "spot" if cat == "spot" else "perp"
-            return df
-    raise RuntimeError("not on bybit")
+            return _scale(_frame([(x[0], x[1], x[2], x[3], x[4], x[5]) for x in j], ms0, ms1), div)
+    if res is None: raise NotListed()
+    raise RuntimeError("no bybit data")
 
 def _mexc(sym, ms0, ms1):
+    base = sym.replace("USDT", "")
+    res = resolve("mexc", base)
+    if res is None: raise NotListed()
+    name, div = (res if res != "guess" else (base + "_USDT", 1.0))
     rows, s = [], ms0
     while s < ms1:
         e = min(s + 6 * 86400_000, ms1)
@@ -120,7 +178,7 @@ def _mexc(sym, ms0, ms1):
         ok = False
         for attempt in range(5):
             try:
-                j = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{sym.replace('USDT', '')}_USDT",
+                j = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{name}",
                                  params=dict(interval="Min5", start=s // 1000, end=e // 1000), timeout=20).json()
                 k = j.get("data") or {}
                 t = k.get("time") or []
@@ -136,31 +194,38 @@ def _mexc(sym, ms0, ms1):
             raise RuntimeError("incomplete chunk")
         s = e
         time.sleep(0.15)
-    return _frame(rows, ms0, ms1)
+    return _scale(_frame(rows, ms0, ms1), div)
 
 def _okx(sym, ms0, ms1):
+    base = sym.replace("USDT", "")
+    res = resolve("okx", base)
+    if res is None: raise NotListed()
+    inst, div = (res if res != "guess" else (f"{base}-USDT-SWAP", 1.0))
     rows, after = [], ms1
     while True:
         d = requests.get("https://www.okx.com/api/v5/market/history-candles",
-                         params=dict(instId=f"{sym.replace('USDT', '')}-USDT-SWAP", bar="5m", after=after, limit=100),
+                         params=dict(instId=inst, bar="5m", after=after, limit=100),
                          timeout=20).json().get("data", [])
         if not d: break
         rows += [x[:6] for x in d]; after = int(d[-1][0])
         if after <= ms0: break
         time.sleep(0.12)
-    return _frame(rows, ms0, ms1)
+    return _scale(_frame(rows, ms0, ms1), div)
 
 def _gate(sym, ms0, ms1):
+    base = sym.replace("USDT", "")
+    res = resolve("gate", base)
+    if res is None: raise NotListed()
+    name, div = (res if res != "guess" else (base + "_USDT", 1.0))
     rows, s = [], ms0
     while s < ms1:
         e = min(s + 5 * 86400_000, ms1)
         r = requests.get("https://api.gateio.ws/api/v4/futures/usdt/candlesticks",
-                         params={"contract": f"{sym.replace('USDT', '')}_USDT", "interval": "5m",
-                                 "from": s // 1000, "to": e // 1000}, timeout=20).json()
+                         params={"contract": name, "interval": "5m", "from": s // 1000, "to": e // 1000}, timeout=20).json()
         if isinstance(r, list): rows += [(float(x["t"]) * 1000, x["o"], x["h"], x["l"], x["c"], x.get("v", 0)) for x in r]
         s = e
         time.sleep(0.1)
-    return _frame(rows, ms0, ms1)
+    return _scale(_frame(rows, ms0, ms1), div)
 
 def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
     """Returns (data, source), or (None, None). A source with all its candles is used as is. A thin coin
@@ -174,6 +239,8 @@ def fetch_window(sym, t0, t1, min_frac=MIN_FRAC):
         tag = {"binance": "bn", "bybit": "by", "mexc": "m", "okx": "o", "gate": "g"}[name]
         try:
             df = f(sym, ms0, ms1)
+        except NotListed:
+            notes.append(tag + ":no"); continue
         except Exception:
             notes.append(tag + ":x"); continue
         if df is None or len(df) < 60:
@@ -198,17 +265,6 @@ def pct(x, nd=1):
     if abs(x) < 0.05: return f"{0:.{nd}f}%"
     return f"{x:+.0f}%" if abs(x) >= 100 else f"{x:+.{nd}f}%"
 
-def session_label(t):
-    """PDF section 0 windows (Toronto time). Outside the listed windows the PDF gives no rule."""
-    m = t.hour * 60 + t.minute
-    if 8 * 60 <= m < 11 * 60: return "Window 1 (8-11 AM)"
-    if 12 * 60 <= m < 14 * 60: return "DEAD ZONE (12-2 PM): no entry per the PDF"
-    if 14 * 60 <= m < 16 * 60:
-        return "Window 2 (2-4 PM)" + (", after 3:30 PM = swing only" if m >= 15 * 60 + 30 else "")
-    if 19 * 60 <= m < 22 * 60: return "7-10 PM: F3 only (Pre-Asia plan)"
-    if 16 * 60 <= m < 19 * 60: return "Phase 2 (4-8 PM): research + swing only"
-    return "outside the PDF's listed windows"
-
 # ---------------- one coin ----------------
 def evaluate(sym, now):
     """returns (metrics dict or None, got_usable_data)"""
@@ -225,36 +281,6 @@ def evaluate(sym, now):
     if src and src.startswith("bybit") and BY_KIND.get(sym) == "spot": src = src.replace("bybit", "bybit-spot", 1)
     return dict(sym=sym.replace("USDT", ""), price=price, day=day, h4=h4, h1=h1, m15=m15, src=src,
                 big=(day >= BIG_MOVE_PCT), ptw=(day >= PTW_PCT)), True
-
-# ---------------- Binance coins that are NOT on your list ----------------
-def binance_extras(listed):
-    """Binance USDT coins up PTW_PCT+ in Binance's own 24h window that are not in ALL_COINS.
-    One call, no history. Returns (list, source) or ([], None) if Binance can't be reached."""
-    for url, name in (("https://fapi.binance.com/fapi/v1/ticker/24hr", "binance perp"),
-                      ("https://data-api.binance.vision/api/v3/ticker/24hr", "binance spot")):
-        try:
-            r = requests.get(url, timeout=20)
-            if r.status_code != 200: continue
-            out = []
-            for x in r.json():
-                sym = x.get("symbol", "")
-                if not sym.endswith("USDT") or sym in listed: continue
-                base = sym[:-4]
-                if base.endswith(("UP", "DOWN", "BULL", "BEAR")) and name == "binance spot": continue
-                if any(base.startswith(pfx) and (base[len(pfx):] + "USDT") in listed for pfx in ("1000000", "1000", "1M")): continue   # already on your list
-                ch, px = float(x["priceChangePercent"]), float(x["lastPrice"])
-                if ch >= PTW_PCT and px > 0:
-                    out.append(dict(sym=base, day=ch, price=px, vol=float(x.get("quoteVolume") or 0),
-                                    src="binance" if name == "binance perp" else "binance-spot"))
-            return sorted(out, key=lambda c: (-c["day"], c["sym"])), name
-        except Exception as e:
-            print("extras failed", name, type(e).__name__, e)
-    return [], None
-
-def xline(c):
-    mult = next((n for pfx, n in (("1000000", "1000000x"), ("1000", "1000x"), ("1M", "1000000x")) if c["sym"].startswith(pfx)), None)
-    return (f"{c['sym']} {pct(c['day'])} 24h | price {c['price']:.6g}" + (f" ({mult} contract)" if mult else "")
-            + f" | 24h volume ${c['vol']/1e6:.1f}M [{SRC_TAG.get(c.get('src'), '?')}]")
 
 # ---------------- alerts ----------------
 def push(title, text, priority="default", tags="bar_chart"):
@@ -287,6 +313,7 @@ CHECK_FOOTER = ("Check on chart (not scanned): peaked 4H, 1H rolling, 15m CHoCH,
 
 def main():
     now = pd.Timestamp.now(tz="UTC")
+    load_instruments()
     try:
         with open(STATE_FILE) as f: state = json.load(f)
     except Exception: state = {}
@@ -307,43 +334,51 @@ def main():
 
     tnow = now.tz_convert(TZ)
     today = tnow.strftime("%Y-%m-%d")
-    extras, xsrc = binance_extras(set(ALL_COINS))
     today_seen = state["ptw"].get(today, {})
-    xfresh = [c for c in extras if "X|" + c["sym"] not in today_seen]
-    xtext = (f"\n\nNOT ON YOUR LIST (source: {xsrc or 'unknown'}; up 20%+ in 24h; Binance 24h figures, no 4H/1H/15m here):\n"
-             + "\n".join(xline(c) for c in xfresh[:MAX_PTW])) if xfresh else ""
     ptws = sorted((c for c in results if c["ptw"]), key=lambda c: (-c["day"], c["sym"]))
     fresh = [c for c in ptws if c["sym"] not in today_seen]
     print(f"coins scanned {len(ALL_COINS)} | with usable data {with_data} | up {PTW_PCT:.0f}%+ in 24h: {len(ptws)}")
-    print(f"PTW fresh={len(fresh)} extras fresh={len(xfresh)} (extras source={xsrc})")
+    print(f"PTW fresh={len(fresh)}")
     missing.sort()
-    miss_txt = " | ".join(m.replace("USDT", "") + " " + NOTES.get(m, "?") for m in missing)
+    tagx = {"bn": "binance", "by": "bybit", "m": "mexc", "o": "okx", "g": "gate"}
+    def not_listed(m):
+        toks = NOTES.get(m, "").split()
+        loaded = [t for t in toks if INSTR.get(tagx.get(t.split(":")[0])) is not None]
+        return bool(loaded) and all(t.endswith(":no") for t in loaded)
+    names = {n for v in INSTR.values() if v for n in v}
+    for n in list(names):
+        for p, _ in PFX:
+            if p and n.startswith(p): names.add(n[len(p):])
+    def similar(m):
+        c = difflib.get_close_matches(m.replace("USDT", ""), sorted(names), n=2, cutoff=0.66)
+        return f" (similar: {', '.join(c)})" if c else ""
+    nl = [m for m in missing if not_listed(m)]
+    nodata = [m for m in missing if m not in nl]
+    miss_txt = ""
+    if nl: miss_txt += f"NOT FOUND on {', '.join(k for k, v in INSTR.items() if v)} ({len(nl)}): " + " | ".join(m.replace("USDT", "") + similar(m) for m in nl)
+    if nodata: miss_txt += ("\n" if miss_txt else "") + f"LISTED BUT NO DATA ({len(nodata)}) (bn=Binance by=Bybit m=MEXC o=OKX g=Gate; no=not listed, x=no data/blocked, %=share of candles, stale=not trading): " + " | ".join(m.replace("USDT", "") + " " + NOTES.get(m, "?") for m in nodata)
     print("NO DATA:", miss_txt)
     head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data).\n"
-            f"Session {tnow.strftime('%H:%M')} Toronto: {session_label(tnow)}\n"
+            f"Scan {tnow.strftime('%H:%M')} Toronto time. The scanner runs 24/7; no session gating.\n"
             "(24h = rolling 24h to last closed 5m candle)\n")
 
     guess_set = {g + "USDT" for g in GUESS_COINS.split()}
     guess_miss = [m for m in missing if m in guess_set]
     guess_txt = (f"\nGUESS_COINS with no data ({len(guess_miss)}): " + " ".join(m.replace("USDT", "") for m in guess_miss)) if guess_miss else ""
     if TEST:
-        body = (head + ("No data for " + str(len(missing)) + " coins (bn=Binance by=Bybit m=MEXC o=OKX g=Gate; x=no data, %=share of candles, stale=not trading):\n"
-                                      + miss_txt if missing else "No data for 0 coins")
+        body = (head + ("No data for " + str(len(missing)) + " coins.\n" + miss_txt if missing else "No data for 0 coins")
                 + guess_txt + "\n\n" + STAGES + "\n\n")
         body += ("PRE-TOP WATCH (up 20%+ in 24h):\n" + "\n".join(line(c) for c in ptws[:MAX_PTW])
                  if ptws else "No coin is up 20%+ in 24h right now.")
         sample = sorted(results, key=lambda c: (-c["day"], c["sym"]))[:3]
         body += "\n\nTest sample only (biggest 24h moves, not alerts):\n" + "\n".join(line(c) for c in sample)
-        body += ("\n\nNOT ON YOUR LIST (Binance, up 20%+ in 24h):\n" + "\n".join(xline(c) for c in extras[:MAX_PTW])
-                 if extras else f"\n\nNot on your list: none up 20%+ on Binance ({'source ' + xsrc if xsrc else 'Binance not reachable'}).")
         push("ALEX7 screener TEST", body)
-    elif fresh or xfresh:
+    elif fresh:
         lst = fresh[:MAX_PTW]
         body = (head + "\nPRE-TOP WATCH: up 20%+ in 24h. Tracking starts here (shorts). Not an entry.\n" + STAGES
-                + "\n\n" + ("\n".join(line(c) for c in lst) if lst else "None on your list.") + xtext + "\n\n" + CHECK_FOOTER)
-        if push(f"ALEX7 PRE-TOP WATCH: {len(lst) + len(xfresh[:MAX_PTW])} up 20%+ in 24h", body, priority="high", tags="eyes"):
+                + "\n\n" + "\n".join(line(c) for c in lst) + "\n\n" + CHECK_FOOTER)
+        if push(f"ALEX7 PRE-TOP WATCH: {len(lst)} up 20%+ in 24h", body, priority="high", tags="eyes"):
             for c in lst: state["ptw"].setdefault(today, {})[c["sym"]] = "ptw"
-            for c in xfresh[:MAX_PTW]: state["ptw"].setdefault(today, {})["X|" + c["sym"]] = "x"
     state["ptw"] = dict(sorted(state["ptw"].items())[-7:])   # keep the last 7 days
 
     # daily heartbeat (after 09:00 Toronto), marked done only if the push went through
