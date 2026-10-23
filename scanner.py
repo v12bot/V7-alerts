@@ -24,6 +24,10 @@
 # Not measured (chart only): HTF resistance, choppy 15m, 1m CHoCH, USD events, open positions, daily loss, correlation.
 #
 # Data: Binance first (perpetual, then spot), then Bybit, MEXC, OKX, Gate, Bitget, BingX. Open interest: OKX only.
+import sys
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace"); sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception: pass
 import os, json, time, difflib, requests, concurrent.futures as cf
 import numpy as np, pandas as pd
 
@@ -713,7 +717,8 @@ def push(title, text, priority="default", tags="bar_chart"):
         while len(t.encode("utf-8")) > limit and "\n" in t: t = t.rsplit("\n", 1)[0]
         if len(t.encode("utf-8")) > limit: t = t.encode("utf-8")[:limit].decode("utf-8", "ignore")
         text = t.rstrip() + "\n...(cut)"
-    print("PUSH:", title, "\n" + text)
+    try: print("PUSH:", title, "\n" + text)
+    except Exception: pass
     if not TOPIC:
         print("(no NTFY_TOPIC set, not sent)"); return False
     try:
@@ -737,7 +742,8 @@ def main():
     load_instruments()
     try: FUND = load_funding(ALL_COINS)
     except Exception as e: print("funding error", e); FUND = {}
-    fx_set, fx_cut = funding_extreme_set(FUND)
+    try: fx_set, fx_cut = funding_extreme_set(FUND)
+    except Exception as e: print("funding rank error", e); fx_set, fx_cut = set(), None
     try: BTC = btc_state(now)
     except Exception as e: print("btc error", e); BTC = None
     try:
