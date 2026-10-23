@@ -4,15 +4,21 @@
 #
 # Every 15 minutes, 24/7, on all coins in the list below:
 #   1 Day (rolling 24h), 4H, 1H, 15m % change per coin (no Week).
-#   2 PRE-TOP WATCH: up 20%+ in rolling 24h (shorts tracking starts here).
-#   3 EXHAUSTION: a PRE-TOP WATCH coin showing 4+ of the 7 parabolic signals in PDF section 8 (those the script can measure).
+#   2 PRE-TOP WATCH (shorts tracking starts here), any ONE of (approved Oct 22):
+#       - up 20%+ in rolling 24h
+#       - reversal signs: up 10%+ in 24h, 4H still up, 1H or 15m red
+#       - a completed sweep + displacement + FVG (F3), any % move
+#       - previous-day high swept, then a 15m candle CLOSES back below it (exchange daily candle, UTC) - close only, no minimum distance
+#     Funding (Bitget/Gate/MEXC) is shown and used for ranking only; top 5% of positive funding, coins with 1M+ USD 24h volume.
+#     PROPOSED REVISION (Oct 22): the previous-day-high route and funding ranking are not yet part of the canonical framework.
+#   3 EXHAUSTION: a PRE-TOP WATCH coin showing 4+ of the 7 parabolic signals in framework section 8 (those the script can measure).
 #   4 WATCH ALERT: sweep -> displacement -> MSB -> bearish FVG found; price waiting to retrace to the FVG 50%.
 #   5 ENTRY ALERT: price retraced to the FVG 50% and a 5m close below the prior 5m low (stand-in for the 1m/5m CHoCH).
 #   Each setup shows entry (50% FVG), stop (beyond sweep wick), TP1 (70%), TP2 (30%), R:R (min 2.1, else no trade),
-#   score + size tier (PDF section 4, OI +2 / 0 / -2), the confluence check, and the exit rules.
+#   score + size tier (framework section 4, OI +2 / 0 / -2), the confluence check, and the exit rules.
 #   Top 6 by priority (stage, then score, then R:R, then 24h move). Coins scanned is shown every time.
 #
-# UNCONFIRMED - USER DECISION REQUIRED: the PDF gives no numbers for sweep, displacement, MSB, S/R flip, supply/demand,
+# UNCONFIRMED - USER DECISION REQUIRED: the framework gives no numbers for sweep, displacement, MSB, S/R flip, supply/demand,
 # OI flat/stall, MACD settings, choppy 15m, score arithmetic or ranking. The "UNCONFIRMED SETTINGS" block holds provisional
 # script values, NOT your rules.
 # Not measured (chart only): HTF resistance, choppy 15m, 1m CHoCH, USD events, open positions, daily loss, correlation.
@@ -21,7 +27,7 @@
 import os, json, time, difflib, requests, concurrent.futures as cf
 import numpy as np, pandas as pd
 
-SCAN_DAYS = 2          # 5m history pulled per coin (Day needs 24h; a little extra for gaps)
+SCAN_DAYS = 3          # 5m history per coin: Day needs 24h, the previous UTC day high needs up to ~72h
 TZ = "America/Toronto"
 MIN_FRAC = 0.97        # a coin's 5m data must be at least this complete
 WORKERS = 4
@@ -307,7 +313,7 @@ def pct(x, nd=1):
     return f"{x:+.0f}%" if abs(x) >= 100 else f"{x:+.{nd}f}%"
 
 # ---------------- UNCONFIRMED SETTINGS ----------------
-# The V4A+ PDF gives NO numbers for these. They are provisional script values, NOT your rules.
+# The V4A+ framework gives NO numbers for these. They are provisional script values, NOT your rules.
 # Each one is "UNCONFIRMED - USER DECISION REQUIRED". Change a value only when you decide it.
 P = dict(
     MACD=(12, 26, 9),      # MACD settings (PDF does not give them)
@@ -323,7 +329,11 @@ P = dict(
     VOL_CLIMAX_X=2.0,      # volume climax = 2x the prior 20-candle average (15m)
     MICRO_CHOCH="5m close below the previous 5m low after the zone touch",   # stand-in for the 1m/5m CHoCH
 )
-MIN_RR = 2.1               # from the PDF (confirmed)
+FUND_TOP_PCT = 5.0         # funding "extreme" = top 5% of eligible coins (approved Oct 22, ranking only)
+FUND_MIN_VOL = 1_000_000   # funding ranking only counts coins with 1M+ USD 24h volume (approved Oct 22)
+REV_MIN_PCT = 10.0         # reversal signs need 10%+ in 24h (approved Oct 22)
+REV_MIN_PCT = 10.0         # reversal signs need 10%+ in 24h (approved Oct 22)
+MIN_RR = 2.1               # from the framework (confirmed)
 LEV_STD, LEV_FVG = 10, 15  # PDF: 10-13x standard, 15x on 7 + FVG. 10x used for token math (UNCONFIRMED)
 MARGIN_MAX = 0.20          # PDF: margin maximum 20%
 ACCOUNT_USD = float(os.environ.get("ACCOUNT_USD") or 0)   # your account size, for token counts (not supplied yet)
@@ -384,7 +394,7 @@ def oi_change_1h(oi):
     return (float(oi.iloc[-1]) / base - 1) * 100 if base > 0 else None
 
 def oi_class(chg, p1h):
-    """returns (label, points). Short side. UNCONFIRMED: the PDF defines OI up + price up = +2, OI up + price stalls = reversal,
+    """returns (label, points). Short side. UNCONFIRMED: the framework defines OI up + price up = +2, OI up + price stalls = reversal,
     OI down on the break = -2, OI flat = 0 = no trade. For a short the 'OI up + price down' mirror is assumed."""
     if chg is None: return ("unverified", None)
     if abs(chg) < P["OI_FLAT"]: return ("flat", 0)
@@ -425,7 +435,7 @@ def detect_short(m15, d5):
     return None
 
 def exhaustion_signals(m15, h1, oi_chg, swept):
-    """The 7 signals in PDF section 8. Returns (met, computable, names_met). HTF resistance cannot be computed (chart)."""
+    """The 7 signals in framework section 8. Returns (met, computable, names_met). HTF resistance cannot be computed (chart)."""
     met, comp, names = 0, 0, []
     def add(ok, name):
         nonlocal met, comp
@@ -463,13 +473,28 @@ def has_sweep(m15):
         if H[i] > prior and C[i] < prior: return True
     return False
 
+def pdh_route(d5):
+    """Route A (approved Oct 22): price traded above the previous day's high, and the last completed 15m candle closed back below it.
+    'Day' = the exchange daily candle (UTC midnight), the same 1D candle as on the charts. Close only, no minimum distance."""
+    day0 = d5.index[-1].floor("D")
+    prev = d5[(d5.index >= day0 - pd.Timedelta(days=1)) & (d5.index < day0)]
+    today = d5[d5.index >= day0]
+    if len(prev) < 230 or len(today) < 3: return None
+    pdh = float(prev.h.max())
+    m15 = to_tf(today, "15min", 15)
+    if len(m15) < 1 or not (float(m15.h.max()) > pdh) or not (float(m15.c.iloc[-1]) < pdh): return None
+    return dict(level=pdh, above=(float(m15.h.max()) / pdh - 1) * 100)
+
 def build_signal(c, d5, btc, now):
     """Adds the V4A+ short analysis to the price metrics. Returns a signal dict or None."""
     m15, h1 = to_tf(d5, "15min", 15), to_tf(d5, "1h", 60)
     if len(m15) < 40 or len(h1) < 8: return None
     det = detect_short(m15, d5)
-    ptw = c["ptw"]
-    if det is None and not ptw: return None
+    pct_ptw = c["ptw"]                       # 20%+ in 24h, or reversal signs (approved Oct 22)
+    pdh = pdh_route(d5)                      # previous-day high swept + 15m close back below (approved Oct 22)
+    ptw = pct_ptw or det is not None or pdh is not None   # any route qualifies (F3 setup approved Oct 22)
+    if not ptw: return None
+    routes = ([c["why"]] if c.get("why") else []) + (["F3 setup"] if det is not None else []) + (["prev-day high swept"] if pdh else [])
     sym = c["sym"].split(" ")[0]
     price = c["price"]
     oi = fetch_oi(sym + "USDT") if (det or ptw) else None
@@ -477,9 +502,13 @@ def build_signal(c, d5, btc, now):
     cls, oipts = oi_class(oi_chg, c["h1"])
     swept = det is not None or has_sweep(m15)
     ex_met, ex_comp, ex_names = exhaustion_signals(m15, h1, oi_chg, swept) if ptw else (0, 0, [])
-    sig = dict(c=c, stage="PRE-TOP WATCH", setup="F1" if ptw else "F3", ex=(ex_met, ex_comp, ex_names), oi=(cls, oipts, oi_chg),
+    sig = dict(c=c, stage="PRE-TOP WATCH", setup="", routes=routes, pdh=pdh, fund=None, ex=(ex_met, ex_comp, ex_names), oi=(cls, oipts, oi_chg),
                blocked=[], det=None)
-    if ptw and ex_met >= 4: sig["stage"] = "EXHAUSTION"
+    rolling = bool(len(h1) >= 2 and h1.h.iloc[-1] < h1.h.iloc[-2] and h1.c.iloc[-1] < h1.c.iloc[-2])   # 1H rolling over (UNCONFIRMED: old text says "by eye")
+    sig["rolling"] = rolling
+    if ptw and ex_met >= 2: sig["stage"] = "EXHAUSTION"
+    if ptw and ex_met >= 3 and rolling: sig["stage"] = "WATCH ALERT"
+    base_stage = sig["stage"]
     if det is None:
         if not ptw: return None
         return sig
@@ -493,15 +522,15 @@ def build_signal(c, d5, btc, now):
     status = "waiting for retrace to 50% FVG"
     stage = "WATCH ALERT"
     if touched:
-        status = "price at the FVG, waiting for 1m/5m CHoCH"
+        status = "price at the FVG, waiting for a 5m close + 1m/5m micro CHoCH"
         l5 = d5.iloc[-2:]
         if len(l5) == 2 and l5.c.iloc[-1] < l5.o.iloc[-1] and l5.c.iloc[-1] < l5.l.iloc[-2]:
-            stage, status = "ENTRY ALERT", "retraced to 50% FVG + 5m close below prior 5m low (micro CHoCH stand-in)"
+            stage, status = "ENTRY ALERT", "retraced to 50% FVG + 5m close below prior 5m low. Confirm the 1m/5m micro CHoCH on the chart (framework)"
     entry = mid
     risk = stop - entry
     if risk <= 0: return sig if ptw else None
     # targets: natural levels below entry = 1H swing lows + 24h low
-    lows = [v for _, v in pivots(h1.l.values, False) if v < entry * 0.999] + ([float(d5.l.min())] if d5.l.min() < entry * 0.999 else [])
+    lows = [v for _, v in pivots(h1.l.values, False) if v < entry * 0.999] + ([float(d5.l.iloc[-288:].min())] if d5.l.iloc[-288:].min() < entry * 0.999 else [])
     tps = sorted(set(round(x, 12) for x in lows), reverse=True)
     blocked = []
     if not tps: blocked.append("no liquidity target below entry")
@@ -515,7 +544,7 @@ def build_signal(c, d5, btc, now):
     h4 = to_tf(d3 if d3 is not None else d5, "4h", 240)
     hs = (hist_now(h4), hist_now(h1), hist_now(m15))
     macd_ok = all(x is not None and x < 0 for x in hs)
-    # confluences (short side). Each 1 point, OI per the PDF (+2 / 0 / -2).
+    # confluences (short side). Each 1 point, OI per the framework (+2 / 0 / -2).
     rng = det["legH"] - det["legL"]
     ratio = (entry - det["legL"]) / rng if rng > 0 else None
     fib_ok = ratio is not None and (0.382 - P["FIB_TOL"]) <= ratio <= (0.618 + P["FIB_TOL"])
@@ -524,8 +553,21 @@ def build_signal(c, d5, btc, now):
     c4 = det["vol_pct"] >= 20
     c6 = det["zone"]
     pts = [("BTC", c1), ("MACD", macd_ok), ("S/R", c3), ("Vol", c4), ("Fib", fib_ok), ("Zone", c6)]
-    score = sum(1 for _, ok in pts if ok) + (oipts or 0)
-    if score <= 5: blocked.append(f"score {score} = skip (needs 6+)")
+    # weekly bias (scanner only, approved Oct 22): rolling 7-day change, a BONUS outside the point score. Down = aligned for a short = bonus; up = shown, no penalty. UNCONFIRMED.
+    wk = None
+    try:
+        t7 = now - pd.Timedelta(days=7)
+        dw, _ = fetch_window(sym + "USDT", t7 - pd.Timedelta(hours=6), t7)
+        if dw is not None and len(dw): wk = (price / float(dw.c.iloc[-1]) - 1) * 100
+    except Exception:
+        wk = None
+    wk_pts = None if wk is None else (1 if wk < 0 else -1)
+    score = sum(1 for _, ok in pts if ok) + (oipts or 0)      # weekly is NOT in the points: it is a bonus tag only
+    tp2_ext = False
+    if wk_pts == 1 and score >= 7 and len(tps) > 2:           # weekly bonus changes TP2 only (approved Oct 22): runner targets the next natural level lower
+        tp2, tp2_ext = tps[2], True
+        rr_blend = (0.7 * (entry - tp1) + 0.3 * (entry - tp2)) / risk
+    if score <= 6: blocked.append(f"score {score} = no trade (needs 7+)")
     if btc is None or btc["unclear"]: blocked.append("BTC 4H unclear / mid-flip")
     if cls == "flat": blocked.append("OI flat")
     if cls == "OI up + price stalls (reversal/trap)": blocked.append("OI up + price stalls = trap")
@@ -533,22 +575,19 @@ def build_signal(c, d5, btc, now):
         ph = pivots(h1.h.values, True)
         if not (len(ph) >= 2 and ph[-1][1] < ph[-2][1] and price < ph[-1][1]):
             blocked.append("70%+ move needs 1H lower high + failed reclaim (not met)")
-    if score >= 7: tier = "7+FVG = FULL 100%"
-    elif score == 6: tier = "6 = probe 25-40%"
-    else: tier = f"{score} = SKIP"
-    sig.update(det=det, entry=entry, stop=stop, tp1=tp1, tp2=tp2, rr1=rr1, rr_blend=rr_blend, status=status, score=score,
-               tier=tier, pts=pts, hs=hs, blocked=blocked, fvg=(det["bot"], det["top"]), lev=LEV_FVG if score >= 7 else LEV_STD,
+    tier = ("7 + FVG = FULL 100%" if score >= 7 else f"{score} = NO TRADE") + (" + WEEKLY BONUS" if (wk_pts == 1 and score >= 7) else "")
+    sig.update(wk=(wk, wk_pts), tp2_ext=tp2_ext, det=det, entry=entry, stop=stop, tp1=tp1, tp2=tp2, rr1=rr1, rr_blend=rr_blend, status=status, score=score,
+               tier=tier, pts=pts, hs=hs, blocked=blocked, fvg=(det["bot"], det["top"]), lev=LEV_FVG,
                aplus=bool(touched and score >= 7 and oipts == 2 and c1))
     sig["stage"] = stage
-    if blocked: sig["stage"] = "PRE-TOP WATCH" if ptw else None   # NO TRADE: kept visible only for coins already on PRE-TOP WATCH
+    if blocked: sig["stage"] = base_stage if ptw else None   # NO TRADE: kept visible only for coins already on PRE-TOP WATCH
     if sig["stage"] is None: return None
-    if not ptw and score < 6: return None                          # non-PTW coins are alerted only at probe grade or better
-    if sig["stage"] in ("WATCH ALERT", "ENTRY ALERT"): sig["setup"] = "F1" if ptw else ("F3 [A+]" if sig["aplus"] else "F3")
+    sig["setup"] = ("F3 [A+]" if sig["aplus"] else "F3 (4 of 4)") if touched else "F3 (3 of 4: retrace pending)"
     return sig
 
 def tokens(sig):
     if not ACCOUNT_USD or not sig.get("entry"): return ""
-    frac = 1.0 if sig["score"] >= 7 else 0.325 if sig["score"] == 6 else 0
+    frac = 1.0 if sig["score"] >= 7 else 0
     if frac == 0: return ""
     n = ACCOUNT_USD * MARGIN_MAX * frac * sig["lev"] / sig["entry"]
     return f"\n   Tokens {n:.6g} total: TP1 {0.7 * n:.6g} (70%) | TP2 {0.3 * n:.6g} (30%)"
@@ -556,11 +595,18 @@ def tokens(sig):
 def sig_text(i, g):
     c = g["c"]
     pc = f"24h {pct(c['day'])} 4H {pct(c['h4'])} 1H {pct(c['h1'])} 15m {pct(c['m15'])}"
-    head = f"{i}) {c['sym']} {g['setup']} SHORT - {g['stage']}{' [NEW]' if g.get('new') else ''}"
+    why = " + ".join(g["routes"]) or "?"
+    head = f"{i}) {c['sym']}{(' ' + g['setup']) if g['setup'] else ''} SHORT - {g['stage']}{' [NEW]' if g.get('new') else ''} ({why})"
+    fl = ""
+    if g.get("fund"):
+        fr, fx, fe = g["fund"]
+        fl = f"\n   Funding {fr:+.4f}%{' - TOP 5% (ranking only)' if fe else ''} [{fx}]"
+    if g.get("pdh"):
+        fl += f"\n   Prev-day high {g['pdh']['level']:.6g} swept (+{g['pdh']['above']:.1f}%), 15m close back below"
     if g["det"] is None:
         m, cp, nm = g["ex"]
-        t = f"{head}\n   {pc} | {c['price']:.6g}"
-        if g["stage"] == "EXHAUSTION": t += f"\n   Exhaustion {m} of 7 signals ({cp} measurable): {', '.join(nm)}. Need 4+, then displacement, BOS, bearish FVG."
+        t = f"{head}\n   {pc} | {c['price']:.6g}{fl}"
+        if g["stage"] in ("EXHAUSTION", "WATCH ALERT"): t += f"\n   Exhaustion signals {m} of 7 ({cp} measurable): {', '.join(nm) or 'none'}" + ("; 1H rolling over. Set the TradingView alert on the chart" if g["stage"] == "WATCH ALERT" else "")
         if c["big"]: t += "\n   70%+ move: needs 1H lower high + failed reclaim"
         return t
     ok = lambda b: "Y" if b else "N"
@@ -569,14 +615,55 @@ def sig_text(i, g):
     oit = (oicls if oicls.startswith("OI") else f"OI {oicls}") + (f" {oichg:+.1f}%/1h" if oichg is not None else "") + (f" ({oipts:+d})" if oipts is not None else "")
     dec = lambda x: ("-" if x is not None and x < 0 else "+" if x is not None else "?")
     if g["blocked"]:
-        return f"{head}\n   {pc} | {c['price']:.6g}\n   NO TRADE: " + "; ".join(g["blocked"])
+        return f"{head}\n   {pc} | {c['price']:.6g}{fl}\n   NO TRADE: " + "; ".join(g["blocked"])
     t = (f"{head}\n   Grade: score {g['score']} -> {g['tier']}{' | A+ gate OK' if g['aplus'] else ''}\n"
          f"   {g['status']}\n"
          f"   Entry {g['entry']:.6g} (50% FVG {g['fvg'][0]:.6g}-{g['fvg'][1]:.6g}) | Stop {g['stop']:.6g}\n"
-         f"   TP1 {g['tp1']:.6g} (70%)" + (f" | TP2 {g['tp2']:.6g} (30%)" if g["tp2"] else " | TP2 n/a (no lower natural level)")
-         + f" | R:R {g['rr1']:.1f} to TP1" + (f", {g['rr_blend']:.1f} blended" if g["rr_blend"] else "") + f" | lev up to {g['lev']}x, margin max 20%"
-         + tokens(g) + f"\n   Conf: {pts} | {oit} | FVG Y | MACD 4H{dec(g['hs'][0])} 1H{dec(g['hs'][1])} 15m{dec(g['hs'][2])}\n   {pc} | {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]")
+         f"   TP1 {g['tp1']:.6g} (70%)" + (f" | TP2 {g['tp2']:.6g} (30%{', extended: weekly bonus' if g.get('tp2_ext') else ''})" if g["tp2"] else " | TP2 n/a (no lower natural level)")
+         + f" | R:R {g['rr1']:.1f} to TP1" + (f", {g['rr_blend']:.1f} blended" if g["rr_blend"] else "") + " | leverage up to 15x, margin max 20%"
+         + tokens(g) + f"\n   Conf: {pts} | {oit} | Weekly " + (("bonus " if g["wk"][1] == 1 else "against, no penalty ") + f"{g['wk'][0]:+.0f}%" if g["wk"][0] is not None else "n/a") + f" | FVG Y | MACD 4H{dec(g['hs'][0])} 1H{dec(g['hs'][1])} 15m{dec(g['hs'][2])}\n   {pc} | {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]{fl}")
     return t
+
+# ---------------- funding (ranking only) ----------------
+def load_funding(coins):
+    """Bulk funding from Bitget, Gate, MEXC (first that has the coin). Binance/Bybit are blocked from GitHub; OKX/BingX have no bulk
+    endpoint with volume. Rate = the exchange's current rate per its own funding interval (usually 8h; NOT normalised - UNCONFIRMED).
+    Returns {SYMBOL: (rate_pct, exchange, volume_usd)}."""
+    def get(url, **kw):
+        try:
+            r = requests.get(url, timeout=20, **kw)
+            return r.json() if r.status_code == 200 else None
+        except Exception: return None
+    tables = {}
+    j = get("https://api.bitget.com/api/v2/mix/market/tickers", params=dict(productType="USDT-FUTURES"))
+    if isinstance(j, dict) and isinstance(j.get("data"), list):
+        tables["bitget"] = {x.get("symbol"): (x.get("fundingRate"), x.get("usdtVolume") or x.get("quoteVolume")) for x in j["data"]}
+    j = get("https://api.gateio.ws/api/v4/futures/usdt/tickers")
+    if isinstance(j, list):
+        tables["gate"] = {x.get("contract"): (x.get("funding_rate"), x.get("volume_24h_quote")) for x in j}
+    j = get("https://contract.mexc.com/api/v1/contract/ticker")
+    if isinstance(j, dict) and isinstance(j.get("data"), list):
+        tables["mexc"] = {x.get("symbol"): (x.get("fundingRate"), x.get("amount24")) for x in j["data"]}
+    out = {}
+    for sym in coins:
+        base = _base(sym)
+        for ex in ("bitget", "gate", "mexc"):
+            t = tables.get(ex)
+            if not t: continue
+            r = resolve(ex, base)
+            if not isinstance(r, tuple) or r[0] not in t: continue
+            try: rate, vol = float(t[r[0]][0]) * 100, float(t[r[0]][1])
+            except (TypeError, ValueError): continue
+            out[sym] = (rate, ex, vol); break
+    print("funding loaded:", {k: (len(v) if v else None) for k, v in tables.items()}, "coins with funding:", len(out))
+    return out
+
+def funding_extreme_set(fund):
+    """Top 5% of positive funding among coins with 1M+ USD 24h volume."""
+    el = sorted((v[0] for v in fund.values() if v[2] >= FUND_MIN_VOL and v[0] > 0), reverse=True)
+    if not el: return set(), None
+    cut = el[max(0, int(len(el) * FUND_TOP_PCT / 100 + 0.999) - 1)]
+    return {k for k, v in fund.items() if v[2] >= FUND_MIN_VOL and v[0] >= cut and v[0] > 0}, cut
 
 # ---------------- one coin ----------------
 BTC = None
@@ -595,7 +682,9 @@ def evaluate(sym, now):
     if src and src.startswith("bybit") and BY_KIND.get(sym) == "spot": src = src.replace("bybit", "bybit-spot", 1)
     b0 = sym.replace("USDT", "")
     m = dict(sym=b0 + (f" ({ALIAS[b0]})" if b0 in ALIAS else ""), price=price, day=day, h4=h4, h1=h1, m15=m15, src=src,
-             big=(day >= BIG_MOVE_PCT), ptw=(day >= PTW_PCT))
+             big=(day >= BIG_MOVE_PCT), ptw=False, why="")
+    if day >= PTW_PCT: m["ptw"], m["why"] = True, "24h 20%+"
+    elif day >= REV_MIN_PCT and h4 > 0 and (h1 < 0 or m15 < 0): m["ptw"], m["why"] = True, "reversal: 4H up, 1H/15m red, 24h 10%+"
     sig = None
     try:
         sig = build_signal(m, d5, BTC, now)
@@ -625,22 +714,26 @@ def push(title, text, priority="default", tags="bar_chart"):
 
 STAGES = "Stages: PRE-TOP WATCH -> EXHAUSTION -> WATCH ALERT -> ENTRY ALERT."
 EXITS = ("Exits: stop hit | BTC 4H flips | OI drops + stalls | FVG fails / fills with no reaction (kill runner) | opposite liquidity swept | "
-         "volume does not confirm. TP1 hit: close 70%, stop to breakeven, runner 30% to TP2, no trailing. Never widen the stop.")
-UNCONF = ("UNCONFIRMED - USER DECISION REQUIRED: sweep, displacement, MSB, S/R flip, supply/demand, OI flat, MACD settings, "
-          "score arithmetic and ranking use provisional script values (PDF gives none). Chart check: choppy 15m, 1m/5m CHoCH, "
-          "HTF resistance, USD event +-30 min, open positions, daily loss, correlation.")
+         "volume does not confirm. +15-20% PnL: close 35%, stop to breakeven. TP1 hit: close 70% of original, stop to breakeven, runner 30% to TP2. "
+         "Never widen the stop. Two losing trades = kill switch.")
+UNCONF = ("UNCONFIRMED - USER DECISION REQUIRED: sweep, displacement, MSB, S/R flip, supply/demand, OI flat, 1H rolling, weekly bonus (down on the week = bonus tag, outside the points), MACD settings, "
+          "score arithmetic and ranking use provisional script values (framework gives none). Chart check: choppy 15m, 1m/5m micro CHoCH, "
+          "HTF resistance, USD event +-30 min, open positions, correlation.")
 
 def main():
     global BTC
     now = pd.Timestamp.now(tz="UTC")
     load_instruments()
+    try: FUND = load_funding(ALL_COINS)
+    except Exception as e: print("funding error", e); FUND = {}
+    fx_set, fx_cut = funding_extreme_set(FUND)
     try: BTC = btc_state(now)
     except Exception as e: print("btc error", e); BTC = None
     try:
         with open(STATE_FILE) as f: state = json.load(f)
     except Exception: state = {}
     old = state.get("sig", {})
-    if not isinstance(old, dict) or any(not isinstance(v, dict) for v in old.values()): old = {}
+    if not isinstance(old, dict) or any(not isinstance(v, str) for v in old.values()): old = {}
     state["sig"] = old
     state.pop("ptw", None)
     results, sigs, with_data, missing = [], [], 0, []
@@ -656,11 +749,15 @@ def main():
             except Exception as e:
                 print("error", futs[fut], type(e).__name__, e)
 
-    tnow = now.tz_convert(TZ)
-    today = tnow.strftime("%Y-%m-%d")
-    seen = state["sig"].get(today, {})
+    seen = state["sig"]
+    for g in sigs:
+        k_ = g["c"]["sym"].split(" ")[0] + "USDT"
+        f = FUND.get(k_)
+        g["fund"] = (f[0], f[1], k_ in fx_set) if f else None
     ptws = sorted((c for c in results if c["ptw"]), key=lambda c: (-c["day"], c["sym"]))
-    sigs.sort(key=lambda g: (-RANK[g["stage"]], -(g.get("score") or 0), -(g.get("rr1") or 0), -g["c"]["day"]))
+    def oi_pts(g): return (g["oi"][1] or 0)
+    sigs.sort(key=lambda g: (-RANK[g["stage"]], -(g.get("score") or 0), -(g.get("rr1") or 0), -len(g["routes"]), -oi_pts(g),
+                             -(1 if g["fund"] and g["fund"][2] else 0), -g["c"]["day"]))
     top = sigs[:6]
     def key(g): return f"{RANK[g['stage']]}|{g.get('entry', 0):.6g}"
     for g in top:
@@ -691,11 +788,11 @@ def main():
     if BTC is None: btc_t = "BTC 4H: no data - treat as UNCLEAR (NO TRADE)"
     elif BTC["unclear"]: btc_t = "BTC 4H: UNCLEAR / mid-flip = NO TRADE"
     else: btc_t = f"BTC 4H: {'bearish, aligned for shorts' if BTC['h4'] < 0 and BTC['h1'] < 0 else 'NOT bearish on 4H+1H (short confluence 1 fails)'} (MACD hist 4H {'expanding' if BTC['expanding'] else 'shrinking'})"
-    head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data) | {tnow.strftime('%H:%M')} Toronto, 24/7\n{btc_t}\n")
+    head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data)\n{btc_t}\n")
     guess_set = {g + "USDT" for g in GUESS_COINS.split()}
     guess_miss = [m for m in missing if m in guess_set]
     guess_txt = (f"\nGUESS_COINS with no data ({len(guess_miss)}): " + " ".join(m.replace("USDT", "") for m in guess_miss)) if guess_miss else ""
-    body_top = ("Top 6 by priority (stage, score, R:R, 24h move):\n" + "\n".join(sig_text(i + 1, g) for i, g in enumerate(top))
+    body_top = ("Top 6 by priority (stage, score, R:R, routes met, OI, funding, 24h move):\n" + "\n".join(sig_text(i + 1, g) for i, g in enumerate(top))
                 if top else "No short setup and no coin up 20%+ in 24h right now.")
     if TEST:
         body = (head + ("No data for " + str(len(missing)) + " coins.\n" + miss_txt if missing else "No data for 0 coins") + guess_txt
@@ -714,22 +811,24 @@ def main():
         title = f"ALEX7 {top[0]['stage']}: {top[0]['c']['sym']}" + (f" +{len(top) - 1} more" if len(top) > 1 else "")
         okall = True
         for n, ch in enumerate(chunks):
-            body = (head + "\nTop 6 by priority (stage, score, R:R, 24h move):\n" if n == 0 else "") + ch
+            body = (head + "\nTop 6 by priority (stage, score, R:R, routes met, OI, funding, 24h move):\n" if n == 0 else "") + ch
             if n == len(chunks) - 1: body += "\n" + EXITS + "\n" + UNCONF
             okall &= push(title + (f" ({n + 1}/{len(chunks)})" if len(chunks) > 1 else ""), body,
                           priority="urgent" if best == 4 else "high" if best >= 2 else "default", tags="rotating_light" if best == 4 else "eyes")
         if okall:
-            for g in fresh: state["sig"].setdefault(today, {})[g["c"]["sym"]] = key(g)
-    state["sig"] = dict(sorted(state["sig"].items())[-7:])
+            for g in fresh: state["sig"][g["c"]["sym"]] = key(g)
+    live = {g["c"]["sym"] for g in sigs}
+    state["sig"] = {k: v for k, v in state["sig"].items() if k in live}      # a coin that stops qualifying is forgotten; if it returns it alerts again
 
-    if tnow.hour >= 9 and state.get("heartbeat") != today and not TEST:
-        if push("ALEX7 scanner alive", f"{with_data} of {len(ALL_COINS)} coins had usable data. {len(ptws)} up 20%+ in 24h. {len(sigs)} signals.",
+    ts = now.timestamp()
+    if ts - state.get("heartbeat_ts", 0) > 24 * 3600 and not TEST:
+        if push("ALEX7 scanner alive", f"{with_data} of {len(ALL_COINS)} coins had usable data. {len(ptws)} on PRE-TOP WATCH by 24h move/reversal. {len(sigs)} tracked.",
                 priority="low", tags="white_check_mark"):
-            state["heartbeat"] = today
-    if ALL_COINS and with_data < len(ALL_COINS) * 0.8 and state.get("datawarn") != today:
+            state["heartbeat_ts"] = ts
+    if ALL_COINS and with_data < len(ALL_COINS) * 0.8 and ts - state.get("datawarn_ts", 0) > 6 * 3600:
         if push("ALEX7 scanner: data problem", f"Only {with_data} of {len(ALL_COINS)} coins had usable data. Do not trust quiet periods.",
                 priority="high", tags="warning"):
-            state["datawarn"] = today
+            state["datawarn_ts"] = ts
     with open(STATE_FILE, "w") as f: json.dump(state, f)
 
 
