@@ -597,18 +597,21 @@ def tokens(sig):
     return f"\n   Tokens {n:.6g} total: TP1 {0.7 * n:.6g} (70%) | TP2 {0.3 * n:.6g} (30%)"
 
 ICON = {"PRE-TOP WATCH": "\U0001F440", "EXHAUSTION": "\U0001F7E1", "WATCH ALERT": "\U0001F7E0", "ENTRY ALERT": "\U0001F534"}
+NEWTAG = "  \U0001F195"
+STARTAG = " \u2605 top 5%"
+APTAG = "  \u2B50 A+ gate"
 def yn(b): return "\u2705" if b else "\u274C"
 
 def sig_text(i, g):
     """One compact card per coin. Same rows every time so it can be scanned by eye on a phone."""
     c = g["c"]
-    t = f"{i}. {c['sym']}  SHORT  {ICON[g['stage']]} {g['stage']}{'  \U0001F195' if g.get('new') else ''}\n"
+    t = f"{i}. {c['sym']}  SHORT  {ICON[g['stage']]} {g['stage']}{NEWTAG if g.get('new') else ''}\n"
     moves = f"24h {pct(c['day'])} | 4H {pct(c['h4'])} | 1H {pct(c['h1'])} | 15m {pct(c['m15'])}"
     why = " + ".join(g["routes"]) or "?"
     extra = ""
     if g.get("fund"):
         fr, fx, fe = g["fund"]
-        extra += f"Funding {fr:+.4f}%{' \u2605 top 5%' if fe else ''}\n"
+        extra += f"Funding {fr:+.4f}%{STARTAG if fe else ''}\n"
     if g.get("pdh"):
         extra += f"Prev-day high {g['pdh']['level']:.6g} swept +{g['pdh']['above']:.1f}%, 15m closed back below\n"
     if g["det"] is None or g["blocked"]:
@@ -628,7 +631,7 @@ def sig_text(i, g):
     dec = lambda x: ("\u25BC" if x is not None and x < 0 else "\u25B2" if x is not None else "?")
     wk, wkp = g["wk"]
     wkt = "n/a" if wk is None else (f"{wk:+.0f}% bonus \u2705" if wkp == 1 else f"{wk:+.0f}% against, no penalty")
-    t += (f"Grade {g['score']}: {g['tier']}{'  \u2B50 A+ gate' if g['aplus'] else ''}\n"
+    t += (f"Grade {g['score']}: {g['tier']}{APTAG if g['aplus'] else ''}\n"
           f"Entry {g['entry']:.6g}  (50% FVG {g['fvg'][0]:.6g}-{g['fvg'][1]:.6g})\n"
           f"Stop  {g['stop']:.6g}\n"
           f"TP1   {g['tp1']:.6g}  (70%)\n"
