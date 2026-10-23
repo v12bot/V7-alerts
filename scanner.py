@@ -592,36 +592,49 @@ def tokens(sig):
     n = ACCOUNT_USD * MARGIN_MAX * frac * sig["lev"] / sig["entry"]
     return f"\n   Tokens {n:.6g} total: TP1 {0.7 * n:.6g} (70%) | TP2 {0.3 * n:.6g} (30%)"
 
+ICON = {"PRE-TOP WATCH": "\U0001F440", "EXHAUSTION": "\U0001F7E1", "WATCH ALERT": "\U0001F7E0", "ENTRY ALERT": "\U0001F534"}
+def yn(b): return "\u2705" if b else "\u274C"
+
 def sig_text(i, g):
+    """One compact card per coin. Same rows every time so it can be scanned by eye on a phone."""
     c = g["c"]
-    pc = f"24h {pct(c['day'])} 4H {pct(c['h4'])} 1H {pct(c['h1'])} 15m {pct(c['m15'])}"
+    t = f"{i}. {c['sym']}  SHORT  {ICON[g['stage']]} {g['stage']}{'  \U0001F195' if g.get('new') else ''}\n"
+    moves = f"24h {pct(c['day'])} | 4H {pct(c['h4'])} | 1H {pct(c['h1'])} | 15m {pct(c['m15'])}"
     why = " + ".join(g["routes"]) or "?"
-    head = f"{i}) {c['sym']}{(' ' + g['setup']) if g['setup'] else ''} SHORT - {g['stage']}{' [NEW]' if g.get('new') else ''} ({why})"
-    fl = ""
+    extra = ""
     if g.get("fund"):
         fr, fx, fe = g["fund"]
-        fl = f"\n   Funding {fr:+.4f}%{' - TOP 5% (ranking only)' if fe else ''} [{fx}]"
+        extra += f"Funding {fr:+.4f}%{' \u2605 top 5%' if fe else ''}\n"
     if g.get("pdh"):
-        fl += f"\n   Prev-day high {g['pdh']['level']:.6g} swept (+{g['pdh']['above']:.1f}%), 15m close back below"
-    if g["det"] is None:
-        m, cp, nm = g["ex"]
-        t = f"{head}\n   {pc} | {c['price']:.6g}{fl}"
-        if g["stage"] in ("EXHAUSTION", "WATCH ALERT"): t += f"\n   Exhaustion signals {m} of 7 ({cp} measurable): {', '.join(nm) or 'none'}" + ("; 1H rolling over. Set the TradingView alert on the chart" if g["stage"] == "WATCH ALERT" else "")
-        if c["big"]: t += "\n   70%+ move: needs 1H lower high + failed reclaim"
-        return t
-    ok = lambda b: "Y" if b else "N"
-    pts = " ".join(f"{n} {ok(b)}" for n, b in g["pts"])
+        extra += f"Prev-day high {g['pdh']['level']:.6g} swept +{g['pdh']['above']:.1f}%, 15m closed back below\n"
+    if g["det"] is None or g["blocked"]:
+        t += moves + "\n"
+        t += f"Why: {why}" + (f" | {g['setup']}" if g.get("setup") else "") + "\n"
+        if g["det"] is None:
+            m, cp, nm = g["ex"]
+            if g["stage"] in ("EXHAUSTION", "WATCH ALERT"):
+                t += f"Signals {m}/7 ({cp} measurable): {', '.join(nm) or 'none'}\n"
+            if g["stage"] == "WATCH ALERT": t += "1H rolling over \u2192 set the TradingView alert on the chart\n"
+            if c["big"]: t += "70%+ move: needs 1H lower high + failed reclaim\n"
+        else:
+            t += "\u26D4 NO TRADE: " + "; ".join(g["blocked"]) + "\n"
+        return t + extra + f"Price {c['price']:.6g}\n"
     oicls, oipts, oichg = g["oi"]
     oit = (oicls if oicls.startswith("OI") else f"OI {oicls}") + (f" {oichg:+.1f}%/1h" if oichg is not None else "") + (f" ({oipts:+d})" if oipts is not None else "")
-    dec = lambda x: ("-" if x is not None and x < 0 else "+" if x is not None else "?")
-    if g["blocked"]:
-        return f"{head}\n   {pc} | {c['price']:.6g}{fl}\n   NO TRADE: " + "; ".join(g["blocked"])
-    t = (f"{head}\n   Grade: score {g['score']} -> {g['tier']}{' | A+ gate OK' if g['aplus'] else ''}\n"
-         f"   {g['status']}\n"
-         f"   Entry {g['entry']:.6g} (50% FVG {g['fvg'][0]:.6g}-{g['fvg'][1]:.6g}) | Stop {g['stop']:.6g}\n"
-         f"   TP1 {g['tp1']:.6g} (70%)" + (f" | TP2 {g['tp2']:.6g} (30%{', extended: weekly bonus' if g.get('tp2_ext') else ''})" if g["tp2"] else " | TP2 n/a (no lower natural level)")
-         + f" | R:R {g['rr1']:.1f} to TP1" + (f", {g['rr_blend']:.1f} blended" if g["rr_blend"] else "") + " | leverage up to 15x, margin max 20%"
-         + tokens(g) + f"\n   Conf: {pts} | {oit} | Weekly " + (("bonus " if g["wk"][1] == 1 else "against, no penalty ") + f"{g['wk'][0]:+.0f}%" if g["wk"][0] is not None else "n/a") + f" | FVG Y | MACD 4H{dec(g['hs'][0])} 1H{dec(g['hs'][1])} 15m{dec(g['hs'][2])}\n   {pc} | {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]{fl}")
+    dec = lambda x: ("\u25BC" if x is not None and x < 0 else "\u25B2" if x is not None else "?")
+    wk, wkp = g["wk"]
+    wkt = "n/a" if wk is None else (f"{wk:+.0f}% bonus \u2705" if wkp == 1 else f"{wk:+.0f}% against, no penalty")
+    t += (f"Grade {g['score']}: {g['tier']}{'  \u2B50 A+ gate' if g['aplus'] else ''}\n"
+          f"Entry {g['entry']:.6g}  (50% FVG {g['fvg'][0]:.6g}-{g['fvg'][1]:.6g})\n"
+          f"Stop  {g['stop']:.6g}\n"
+          f"TP1   {g['tp1']:.6g}  (70%)\n"
+          + (f"TP2   {g['tp2']:.6g}  (30%{', extended: weekly bonus' if g.get('tp2_ext') else ''})\n" if g["tp2"] else "TP2   n/a (no lower natural level)\n")
+          + f"R:R {g['rr1']:.1f} to TP1" + (f" | {g['rr_blend']:.1f} blended" if g["rr_blend"] else "") + " | up to 15x | margin max 20%\n"
+          + (tokens(g).strip() + "\n" if tokens(g) else "")
+          + f"{g['status']}\n"
+          + "Checks: " + " ".join(f"{n} {yn(b)}" for n, b in g["pts"]) + f" | MACD 4H{dec(g['hs'][0])} 1H{dec(g['hs'][1])} 15m{dec(g['hs'][2])}\n"
+          + f"{oit} | Weekly {wkt}\n"
+          + moves + "\n" + f"Why: {why} | {g['setup']}\n" + extra + f"Price {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]\n")
     return t
 
 # ---------------- funding (ranking only) ----------------
@@ -713,12 +726,10 @@ def push(title, text, priority="default", tags="bar_chart"):
         print("push failed:", e); return False
 
 STAGES = "Stages: PRE-TOP WATCH -> EXHAUSTION -> WATCH ALERT -> ENTRY ALERT."
-EXITS = ("Exits: stop hit | BTC 4H flips | OI drops + stalls | FVG fails / fills with no reaction (kill runner) | opposite liquidity swept | "
-         "volume does not confirm. +15-20% PnL: close 35%, stop to breakeven. TP1 hit: close 70% of original, stop to breakeven, runner 30% to TP2. "
-         "Never widen the stop. Two losing trades = kill switch.")
-UNCONF = ("UNCONFIRMED - USER DECISION REQUIRED: sweep, displacement, MSB, S/R flip, supply/demand, OI flat, 1H rolling, weekly bonus (down on the week = bonus tag, outside the points), MACD settings, "
-          "score arithmetic and ranking use provisional script values (framework gives none). Chart check: choppy 15m, 1m/5m micro CHoCH, "
-          "HTF resistance, USD event +-30 min, open positions, correlation.")
+EXITS = ("EXITS: stop hit | BTC 4H flips | OI drops + stalls | FVG fails | opposite liquidity swept | volume does not confirm. "
+         "+15-20% PnL: close 35% + stop to breakeven. TP1: close 70% + stop to breakeven, then manage the 30% runner. Never widen the stop. 2 losses = kill switch.")
+UNCONF = ("UNCONFIRMED (provisional script values): sweep, displacement, MSB, S/R flip, supply/demand, OI flat, 1H rolling, MACD, score, weekly. "
+          "Chart check: choppy 15m, 1m/5m micro CHoCH, HTF resistance, USD event, open positions, correlation.")
 
 def main():
     global BTC
@@ -788,17 +799,17 @@ def main():
     if BTC is None: btc_t = "BTC 4H: no data - treat as UNCLEAR (NO TRADE)"
     elif BTC["unclear"]: btc_t = "BTC 4H: UNCLEAR / mid-flip = NO TRADE"
     else: btc_t = f"BTC 4H: {'bearish, aligned for shorts' if BTC['h4'] < 0 and BTC['h1'] < 0 else 'NOT bearish on 4H+1H (short confluence 1 fails)'} (MACD hist 4H {'expanding' if BTC['expanding'] else 'shrinking'})"
-    head = (f"Coins scanned: {len(ALL_COINS)} ({with_data} with usable data)\n{btc_t}\n")
+    head = f"ALEX7 | {len(ALL_COINS)} scanned ({with_data} with data)\n{btc_t}\n"
     guess_set = {g + "USDT" for g in GUESS_COINS.split()}
     guess_miss = [m for m in missing if m in guess_set]
     guess_txt = (f"\nGUESS_COINS with no data ({len(guess_miss)}): " + " ".join(m.replace("USDT", "") for m in guess_miss)) if guess_miss else ""
-    body_top = ("Top 6 by priority (stage, score, R:R, routes met, OI, funding, 24h move):\n" + "\n".join(sig_text(i + 1, g) for i, g in enumerate(top))
-                if top else "No short setup and no coin up 20%+ in 24h right now.")
+    body_top = ("TOP 6 (ranked: stage, score, R:R)\n\n" + "\n".join(sig_text(i + 1, g) for i, g in enumerate(top))
+                if top else "No coin qualifies right now.\n")
     if TEST:
-        body = (head + ("No data for " + str(len(missing)) + " coins.\n" + miss_txt if missing else "No data for 0 coins") + guess_txt
-                + "\n\n" + STAGES + "\n\n" + body_top)
+        body = head + "\n" + body_top + "\n" + EXITS + "\n\n" + UNCONF
+        body += "\n\n-- DATA CHECK (test only) --\n" + (f"No data for {len(missing)} coins.\n" + miss_txt + guess_txt if missing else "No data for 0 coins")
         sample = sorted(results, key=lambda c: (-c["day"], c["sym"]))[:3]
-        body += "\n\nTest sample (biggest 24h moves, not alerts):\n" + "\n".join(f"{c['sym']} {pct(c['day'])} 24h price {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]" for c in sample)
+        body += "\n\nBiggest 24h moves (not alerts):\n" + "\n".join(f"{c['sym']} {pct(c['day'])} | {c['price']:.6g} [{SRC_TAG.get(c.get('src'), '?')}]" for c in sample)
         push("ALEX7 screener TEST", body)
     elif fresh:
         best = max(RANK[g["stage"]] for g in fresh)
@@ -811,7 +822,7 @@ def main():
         title = f"ALEX7 {top[0]['stage']}: {top[0]['c']['sym']}" + (f" +{len(top) - 1} more" if len(top) > 1 else "")
         okall = True
         for n, ch in enumerate(chunks):
-            body = (head + "\nTop 6 by priority (stage, score, R:R, routes met, OI, funding, 24h move):\n" if n == 0 else "") + ch
+            body = (head + "\nTOP 6 (ranked: stage, score, R:R)\n\n" if n == 0 else "") + ch
             if n == len(chunks) - 1: body += "\n" + EXITS + "\n" + UNCONF
             okall &= push(title + (f" ({n + 1}/{len(chunks)})" if len(chunks) > 1 else ""), body,
                           priority="urgent" if best == 4 else "high" if best >= 2 else "default", tags="rotating_light" if best == 4 else "eyes")
