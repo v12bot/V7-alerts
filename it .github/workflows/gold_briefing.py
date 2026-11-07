@@ -22,14 +22,13 @@ Secrets: NTFY_TOPIC (required - treat the topic name like a password,
 anyone who knows it can read your alerts), OANDA_API_TOKEN,
 TRADELOCKER_DEMO_EMAIL / PASSWORD / SERVER (optional, demo only, never
 live). Optional repo variables: PRICE_OFFSET (chart price minus feed
-price), LOT_SIZE (your constant lot size; dollar amounts on the card are
-for this size, 1 lot of gold = 100 oz so $1 move = $100 per lot).
+price). The card shows R multiples and point values only — no dollar
+amounts, because the lot size varies trade to trade.
 """
 import json
 import os
 import sys
 import urllib.request
-from time import sleep
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -44,19 +43,11 @@ NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "").strip()
 # compare with your chart, then set this as a repo variable.
 PRICE_OFFSET = float(os.environ.get("PRICE_OFFSET", "0.0") or 0.0)
 
-# Your constant lot size. Every $ amount on the card (1R, each TP) is for
-# this size. Leave unset and the card shows amounts per 1 lot.
-LOT_SIZE = float(os.environ.get("LOT_SIZE", "1.0") or 1.0)
-
-# How many times the alert sounds in total (3 = the card + 2 short repeats).
-# Each repeat is a short ping with only the BEST line, so the phone sounds
-# again without spamming the full card. The delay between sends is
-# ALERT_REPEAT_DELAY seconds; with the defaults (3 sounds, 2s apart) the
-# alerting lasts about 5 seconds. The total repeat time is capped at 240s
-# so the run stays inside the workflow's 5-minute timeout.
-ALERT_REPEATS = int(os.environ.get("ALERT_REPEATS", "3") or 3)
-ALERT_REPEAT_DELAY = int(os.environ.get("ALERT_REPEAT_DELAY", "2") or 2)
-
+# No alert repeats: the card is sent once. Repeating the BEST line did
+# not make the phone beep for 3-5 seconds — the notification sound length
+# is the phone's sound file, not something the script controls. If a
+# longer alert sound is wanted, set a longer notification sound in the
+# ntfy app on the phone.
 # ORB filter (range of the first 15m candle after 8:00 ET, in points)
 ORB_MIN_RANGE = 4.0
 ORB_MAX_RANGE = 15.0
@@ -383,14 +374,12 @@ def _atr_latest(candles, n=14):
 
 
 def _macd_hist_latest(candles):
-    """MACD(12,26,9) histogram on closes; latest value or None."""
-    closes = [c["c"] for c in candles]
-    if len(closes) < 35:
+    """MACD(12,26,9) histogram on closes; latest value or None.
+    Reuses _macd_line_series for the MACD line instead of recomputing
+    the two EMAs here."""
+    if len(candles) < 35:
         return None
-    e12 = _ema_series(closes, 12)
-    e26 = _ema_series(closes, 26)
-    macd = [None if (a is None or b is None) else a - b
-            for a, b in zip(e12, e26)]
+    macd = _macd_line_series(candles)
     first = next(i for i, m in enumerate(macd) if m is not None)
     mvals = macd[first:]
     if len(mvals) < 9:
@@ -498,10 +487,13 @@ def _last_swings(candles, k=2, bar_ms=15 * 60 * 1000, as_of_ms=None):
     return highs[::-1], lows[::-1]
 
 
-def _structure(candles, k=2, bar_ms=15 * 60 * 1000, as_of_ms=None):
+def _structure(candles, k=2, bar_ms=15 * 60 * 1000, as_of_ms=None, swings=None):
     """Structure from the last two confirmed swing highs/lows: +1 for
-    HH/HL (bullish), -1 for LH/LL (bearish), None when mixed or unknown."""
-    highs, lows = _last_swings(candles, k=k, bar_ms=bar_ms, as_of_ms=as_of_ms)
+    HH/HL (bullish), -1 for LH/LL (bearish), None when mixed or unknown.
+    Pass precomputed swings (from _last_swings) to avoid recomputing them."""
+    if swings is None:
+        swings = _last_swings(candles, k=k, bar_ms=bar_ms, as_of_ms=as_of_ms)
+    highs, lows = swings
     if len(highs) < 2 or len(lows) < 2:
         return None
     if highs[0] > highs[1] and lows[0] > lows[1]:
@@ -667,8 +659,8 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
     h4 = _resample(candles, 240)
     h1_line = _macd_line_series(h1)
     h1_macd = h1_line[-1] if h1_line else None
-    h1_struct = _structure(h1, bar_ms=3600 * 1000)
     h1_h, h1_l = _last_swings(h1, bar_ms=3600 * 1000)
+    h1_struct = _structure(h1, bar_ms=3600 * 1000, swings=(h1_h, h1_l))
     # Full 1H bias: MACD line and structure agree. The backtest says this
     # is the best per-trade filter (+0.17R vs +0.14R baseline) but it cuts
     # 75% of trades, so it is shown, not used as a hard gate.
@@ -803,18 +795,16 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
         return {"label": label, "direction": direction, "entry": entry,
                 "stop": stop, "risk": risk, "tps": tps, "room": room,
                 "score": score, "trade": not reasons, "reasons": reasons,
-                "why": " · ".join(why), "cond": cond,
-                "per_r": risk * 100.0 * LOT_SIZE, "invalid": invalid}
+                "why": " · ".join(why), "cond": cond, "invalid": invalid}
 
     def setup_block(s, header):
         """One setup as a compact block: header, entry/SL/TPs, exit+invalid."""
         out = [header]
-        out.append("Entry %s · SL %s · Risk %.1f · 1R $%s" % (
-            format(s["entry"], ",.1f"), format(s["stop"], ",.1f"), s["risk"],
-            format(s["per_r"], ",.0f")))
+        out.append("Entry %s · SL %s · Risk %.1f" % (
+            format(s["entry"], ",.1f"), format(s["stop"], ",.1f"), s["risk"]))
         if s["tps"]:
-            out.append(" · ".join("TP%d %s (%.1fR, $%s)" % (
-                j + 1, format(p, ",.1f"), r, format(r * s["per_r"], ",.0f"))
+            out.append(" · ".join("TP%d %s (%.1fR)" % (
+                j + 1, format(p, ",.1f"), r)
                 for j, (p, r) in enumerate(s["tps"])))
         else:
             out.append("No TPs: no levels ahead")
@@ -925,9 +915,8 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
                                     " (live)" if live is not None else " (close)",
                                     tf_line))
     if orb_range is not None:
-        lines.append("ORB range %.1f pts: %s · $ at %s %s" % (
-            orb_range, "OK" if orb_ok else "SKIP",
-            format(LOT_SIZE, "g"), "lot" if LOT_SIZE == 1 else "lots"))
+        lines.append("ORB range %.1f pts: %s" % (
+            orb_range, "OK" if orb_ok else "SKIP"))
     else:
         lines.append("ORB: forms at 8:15 (first 15m candle after 8:00)")
     if partial:
@@ -1055,10 +1044,9 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
     # Best trade up top, so the answer is visible without scrolling.
     best = next((s for s in setups if s["trade"]), None)
     if best is not None:
-        lines.append("🔥 BEST: %s %s · SL %s · 1R $%s · %d/5" % (
+        lines.append("🔥 BEST: %s %s · SL %s · %d/5" % (
             best["label"], format(best["entry"], ",.1f"),
-            format(best["stop"], ",.1f"), format(best["per_r"], ",.0f"),
-            best["score"]))
+            format(best["stop"], ",.1f"), best["score"]))
     elif setups:
         lines.append("⚠️ NO TRADE SETUP — top: %s (%s)" % (
             setups[0]["label"], "; ".join(setups[0]["reasons"])))
@@ -1173,30 +1161,6 @@ def send_ntfy(title, body, priority=3, tags="chart_with_upwards_trend"):
         return False
 
 
-def repeat_alert(title, body):
-    """Sound the alert ALERT_REPEATS times in total. The first send (the
-    full card, done by the caller) is #1; each repeat is a short ping with
-    just the BEST line, so the phone sounds again without spamming the
-    full card. The delay between sends is ALERT_REPEAT_DELAY seconds,
-    capped so the total repeat time stays under 240s (the workflow's
-    5-minute timeout)."""
-    if ALERT_REPEATS <= 1:
-        return
-    best = ""
-    for line in body.split("\n"):
-        if line.startswith("🔥 BEST:"):
-            best = line
-            break
-    if not best:
-        best = title
-    delay = min(ALERT_REPEAT_DELAY,
-                240 // max(ALERT_REPEATS - 1, 1))
-    for n in range(2, ALERT_REPEATS + 1):
-        sleep(delay)
-        send_ntfy(title, "%s\n(repeat %d of %d)" % (best, n, ALERT_REPEATS),
-                  priority=3, tags="bell")
-
-
 # ============================ MODES ============================
 def feedcheck():
     results = fetch_all_feeds()
@@ -1255,7 +1219,6 @@ def briefing():
                             active["name"], fallback_note, gap_line(results),
                             daily=daily)
     send_ntfy(title, body)
-    repeat_alert(title, body)
     return 0
 
 
@@ -1348,7 +1311,7 @@ def selftest():
     # --- Scalp card: ranked setups with entry / SL / TPs / exit ---
     for needle in ("ORB LONG", "ORB SHORT", "Entry 4,072.0", "Entry 4,058.3",
                    "TP1 4,090.0", "Exit: trail 40%", "TOP 2",
-                   "1R $", "$ at 1 lot", "Invalid 15m close",
+                   "Risk ", "ORB range", "Invalid 15m close",
                    "Context:", "🔥 BEST:", "👀 WATCH", "1H bias",
                    "🔔 ALERTS", "Key levels"):
         if needle not in body_ok:
