@@ -1574,8 +1574,7 @@ jobs:
                   NTFY_SERVER + "/" + NTFY_TOPIC,
                   data=body.encode("utf-8"),
                   method="POST",
-                  headers={"Title": title, "Priority": str(priority), "Tags": tags,
-                           "Click": TRADINGVIEW_CHART},
+                  headers={"Title": title, "Priority": str(priority), "Tags": tags},
               )
               if NTFY_TOKEN:
                   req.add_header("Authorization", "Bearer " + NTFY_TOKEN)
