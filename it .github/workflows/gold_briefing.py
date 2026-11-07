@@ -830,37 +830,40 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
         if check_ran and ran > 0.5:
             reasons.append("already ran %.1fR past entry" % ran)
         why = ["room %.1fR" % room,
-               "vol OK" if vol_ok else "vol weak",
-               "VWAP with" if vwap_with else "VWAP against",
-               "MACD agrees" if macd_ok else "MACD disagrees"]
+               "vol ✓" if vol_ok else "vol ✗",
+               "VWAP ✓" if vwap_with else "VWAP ✗",
+               "MACD ✓" if macd_ok else "MACD ✗"]
         if bias_1h is None:
-            why.append("1H bias mixed")
+            why.append("1H bias ~")
         elif ((direction == "long" and bias_1h == 1)
               or (direction == "short" and bias_1h == -1)):
-            why.append("1H bias with")
+            why.append("1H bias ✓")
         else:
-            why.append("1H bias against")
+            why.append("1H bias ✗")
         return {"label": label, "direction": direction, "entry": entry,
                 "stop": stop, "risk": risk, "tps": tps, "room": room,
                 "score": score, "trade": not reasons, "reasons": reasons,
                 "why": " · ".join(why), "cond": cond, "invalid": invalid}
 
     def setup_block(s, header):
-        """One setup as a compact block: header, entry/SL/TPs, exit+invalid."""
+        """One setup as a compact block: header, entry/SL, TPs+invalid, why.
+        TPs are slash-separated in order (TP1 first), so the TP1/TP2
+        labels are implicit in the order - same prices, same R values,
+        fewer characters. The exit rule (trail 40% after TP1) is stated
+        once in the TOP/WATCH section headers, not repeated on every
+        setup; the per-setup invalidation stays on the TP line."""
         out = [header]
         out.append("Entry %s · SL %s · Risk %.1f" % (
             format(s["entry"], ",.1f"), format(s["stop"], ",.1f"), s["risk"]))
         if s["tps"]:
-            out.append(" · ".join("TP%d %s (%.1fR)" % (
-                j + 1, format(p, ",.1f"), r)
-                for j, (p, r) in enumerate(s["tps"])))
+            tp_line = "TPs " + "/".join(format(p, ",.1f") for p, r in s["tps"])
+            tp_line += " (%s)" % "/".join("%.1fR" % r for p, r in s["tps"])
         else:
-            out.append("No TPs: no levels ahead")
-        exit_line = "Exit: trail 40%"
+            tp_line = "No TPs: no levels ahead"
         if s.get("invalid"):
             ip, side = s["invalid"]
-            exit_line += " · Invalid 15m close %s %s" % (side, format(ip, ",.1f"))
-        out.append(exit_line)
+            tp_line += " · Invalid 15m close %s %s" % (side, format(ip, ",.1f"))
+        out.append(tp_line)
         out.append("Why: %s" % s["why"])
         return out
 
@@ -1159,17 +1162,15 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
             lines.append("%d. %s  %-6s %-7s %+.0f" % (
                 i, format(p, ",.1f"), lab, _level_colour(lab), p - price))
     lines.append("")
-    lines.append("TOP %d (ranked: score, room)" % len(setups[:3]))
+    lines.append("TOP %d (ranked: score, room · trail 40%%)" % len(setups[:3]))
     for i, s in enumerate(setups[:3], 1):
         verdict = "🟢 TRADE" if s["trade"] else "⛔ NO TRADE: " + "; ".join(s["reasons"])
-        lines.append("")
         lines.extend(setup_block(
             s, "%d. %s %s · %d/5" % (i, s["label"], verdict, s["score"])))
     if watch_setups:
         lines.append("")
-        lines.append("👀 WATCH (not broken yet — plan for when it breaks)")
+        lines.append("👀 WATCH (not broken yet · trail 40%)")
         for s in watch_setups:
-            lines.append("")
             lines.extend(setup_block(s, "%s (%s)" % (s["label"], s["cond"])))
     lines.append("")
     lines.append("Key levels")
@@ -1432,9 +1433,13 @@ def selftest():
     # The synthetic Monday has a LON H liquidity-zone sweep (08:00 high
     # 4072.00 penetrates the zone, 08:15 closes back below 4066.40), so the
     # LIQZONE SHORT is the BEST setup and the card tops out at 3, not 2.
+    # Condensed format (Nov 7): TPs are slash-separated in order, the
+    # trail-40% exit is stated once in the TOP/WATCH headers, and the Why
+    # factors use ✓/✗ — so "TP1 4,090.0" is now "TPs 4,090.0" and
+    # "Exit: trail 40%" is now "trail 40%" in the section header.
     for needle in ("ORB LONG", "ORB SHORT", "LIQZONE SHORT", "Entry 4,072.0",
                    "Entry 4,058.3", "Entry 4,063.0",
-                   "TP1 4,090.0", "Exit: trail 40%", "TOP 3",
+                   "TPs 4,090.0", "trail 40%", "TOP 3",
                    "Risk ", "ORB range", "Invalid 15m close",
                    "Context:", "🔥 BEST:", "👀 WATCH", "1H bias",
                    "🔔 ALERTS", "Key levels"):
