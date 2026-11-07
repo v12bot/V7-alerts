@@ -18,8 +18,8 @@ on:
   schedule:
     - cron: "25 12 * * 1-5"   # NY briefing, 8:25 ET in summer time
     - cron: "25 13 * * 1-5"   # NY briefing, 8:25 ET in winter time
-    - cron: "37 21 * * 0"     # Sunday open, 5:37 PM ET in summer time
-    - cron: "37 22 * * 0"     # Sunday open, 5:37 PM ET in winter time
+    - cron: "5 22 * * 0"      # Sunday open, 6:05 PM ET in summer time
+    - cron: "5 23 * * 0"      # Sunday open, 6:05 PM ET in winter time
     - cron: "0 16 * * 3"      # Wednesday swing check, 12:00 ET in summer time
     - cron: "0 17 * * 3"      # Wednesday swing check, 12:00 ET in winter time
   workflow_dispatch:
@@ -124,9 +124,9 @@ jobs:
 
           # When a scheduled run may send (minutes after midnight, ET). GitHub can
           # delay scheduled runs, so the windows are wide - but they must stay clear
-          # of the wrong-season cron (07:25 / 09:25 ET and 16:37 / 18:37 ET Sunday).
+          # of the wrong-season cron (07:25 / 09:25 ET and 17:05 / 19:05 ET Sunday).
           NY_WINDOW = (7 * 60 + 30, 9 * 60 + 20)
-          SUNDAY_WINDOW = (17 * 60 + 10, 18 * 60 + 5)
+          SUNDAY_WINDOW = (17 * 60 + 35, 18 * 60 + 35)
           # Wednesday midweek swing check (12:00-12:30 ET). Outside the NY window
           # (07:30-09:20) so it never collides with the scalp briefing.
           SWING_WINDOW = (12 * 60, 12 * 60 + 30)
