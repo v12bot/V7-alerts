@@ -1,0 +1,37 @@
+name: gold briefing
+
+on:
+  schedule:
+    # UTC. Each time is listed twice so it works in summer and winter time.
+    # The script only sends inside the right ET window, so the wrong one does nothing.
+    - cron: "25 12 * * 1-5"   # NY briefing 8:25 ET (summer time)
+    - cron: "25 13 * * 1-5"   # NY briefing 8:25 ET (winter time)
+    - cron: "37 21 * * 0"     # Sunday open 5:37 PM ET (summer time)
+    - cron: "37 22 * * 0"     # Sunday open 5:37 PM ET (winter time)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "briefing, feedcheck or selftest"
+        default: "feedcheck"
+      force:
+        description: "1 = send now, ignore the time window"
+        default: "1"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
+          PRICE_OFFSET: ${{ vars.PRICE_OFFSET }}
+          LOT_SIZE: ${{ vars.LOT_SIZE }}
+          MODE: ${{ github.event.inputs.mode || 'briefing' }}
+          FORCE: ${{ github.event.inputs.force || '0' }}
+        run: python "it .github/workflows/gold_briefing.py"
