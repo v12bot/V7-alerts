@@ -965,6 +965,93 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
         if ctx2:
             lines.append(" · ".join(ctx2))
     lines.append("")
+    # Colour for a markup level, per the Gold Daily Checklist colour key:
+    # weekly purple, daily orange, 4H yellow, 1H blue, 15m green, ORB
+    # green. The card is plain text (ntfy), so the colour is written as a
+    # word — it tells him which colour to draw the line in TradingView.
+    def _level_colour(label):
+        if label.startswith("W "):
+            return "purple"
+        if label.startswith("D "):
+            return "orange"
+        if label.startswith("4H "):
+            return "yellow"
+        if label.startswith("1H "):
+            return "blue"
+        if label.startswith("15m") or label.startswith("ORB"):
+            return "green"
+        if label.startswith(("ASIA", "LON")):
+            return "green"
+        return ""
+
+    # Markup levels (the chart markup for the day, per the Gold Daily
+    # Checklist line budget): weekly 1, daily 2, 4H 2, 1H 2, 15m up to 4,
+    # ORB 2. Each is (price, label). The 4H "box" is the entry zone around
+    # the 4H swing level; in text it shows as the level line. All prices
+    # here are offset, matching `price`.
+    markup = []
+    # Weekly: nearest unbroken weekly swing (1 line).
+    _w = [(abs(p - price), p, lab) for p, lab in ((w_h, "W H"), (w_l, "W L"))
+          if p is not None]
+    if _w:
+        _d, _p, _lab = min(_w)
+        markup.append((_p, _lab))
+    # Daily: nearest unbroken daily swing high and low (2 lines).
+    if d_h is not None:
+        markup.append((d_h, "D H"))
+    if d_l is not None:
+        markup.append((d_l, "D L"))
+    # 4H: last unbroken 4H swing high and low (2 lines).
+    if h4_uh:
+        markup.append((h4_uh[-1]["price"] + PRICE_OFFSET, "4H H"))
+    if h4_ul:
+        markup.append((h4_ul[-1]["price"] + PRICE_OFFSET, "4H L"))
+    # 1H: last 1H swing high and low (2 lines).
+    if h1_h:
+        markup.append((h1_h[0] + PRICE_OFFSET, "1H H"))
+    if h1_l:
+        markup.append((h1_l[0] + PRICE_OFFSET, "1H L"))
+    # 15m: nearest 4 of the 15m swings + ASIA/LON levels.
+    _f15 = []
+    for nm, p, _dir, _cm in swing_defs:
+        if nm.startswith("15m"):
+            _f15.append((abs(p + PRICE_OFFSET - price), p + PRICE_OFFSET, nm))
+    for _p, lab in items:
+        if lab in ("ASIA H", "ASIA L", "LON H", "LON L"):
+            _p2 = _p + PRICE_OFFSET
+            _f15.append((abs(_p2 - price), _p2, lab))
+    _f15.sort(key=lambda x: x[0])
+    for _d, _p, _lab in _f15[:4]:
+        markup.append((_p, _lab))
+    # ORB: ORB H/L (2 lines, if the ORB has formed).
+    if orb:
+        markup.append((orb[0] + PRICE_OFFSET, "ORB H"))
+        markup.append((orb[1] + PRICE_OFFSET, "ORB L"))
+    # Sort by price (highest first), dedupe identical prices.
+    markup.sort(key=lambda x: -x[0])
+    _seen = set()
+    _dedup = []
+    for _p, _lab in markup:
+        _k = round(_p, 1)
+        if _k in _seen:
+            continue
+        _seen.add(_k)
+        _dedup.append((_p, _lab))
+    markup = _dedup
+    # Line budget: about 10 objects. Always keep the weekly and daily
+    # lines (the context), then fill the rest with the nearest 4H/1H/15m/
+    # ORB levels until 10 total.
+    _keep_wd = [m for m in markup if m[1].startswith(("W ", "D "))]
+    _rest = sorted([m for m in markup if not m[1].startswith(("W ", "D "))],
+                   key=lambda x: abs(x[0] - price))
+    markup = sorted(_keep_wd + _rest[:max(0, 10 - len(_keep_wd))],
+                    key=lambda x: -x[0])
+    # The 3 TradingView alerts: the 3 markup levels closest to price.
+    # Alerts are levels to watch — the trade setup (entry, SL, TPs) is a
+    # separate thing, listed under TOP 3.
+    _alert = sorted(((abs(p - price), p, lab) for p, lab in markup),
+                    key=lambda x: x[0])
+    alert_levels = [(p, lab) for _d, p, lab in _alert[:3]]
     # Best trade up top, so the answer is visible without scrolling.
     best = next((s for s in setups if s["trade"]), None)
     if best is not None:
@@ -977,6 +1064,11 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
             setups[0]["label"], "; ".join(setups[0]["reasons"])))
     else:
         lines.append("⚠️ NO TRADE SETUP")
+    if alert_levels:
+        lines.append("🔔 ALERTS — set these %d in TradingView" % len(alert_levels))
+        for i, (p, lab) in enumerate(alert_levels, 1):
+            lines.append("%d. %s  %-6s %-7s %+.0f" % (
+                i, format(p, ",.1f"), lab, _level_colour(lab), p - price))
     lines.append("")
     lines.append("TOP %d (ranked: score, room)" % len(setups[:3]))
     for i, s in enumerate(setups[:3], 1):
@@ -991,13 +1083,19 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
             lines.append("")
             lines.extend(setup_block(s, "%s (%s)" % (s["label"], s["cond"])))
     lines.append("")
-    lines.append("Levels")
-    for p, label in rows:
+    lines.append("Key levels")
+    # The day's chart markup (Gold Daily Checklist line budget): weekly 1,
+    # daily 2, 4H 2, 1H 2, 15m up to 4, ORB 2. `markup` was computed above,
+    # before BEST, so the ALERTS and this list always agree. NOW is merged
+    # in by price so the list reads top to bottom.
+    _kl = sorted(markup + [(price, "NOW")], key=lambda x: -x[0])
+    for p, label in _kl:
         if label == "NOW":
             tag = " (live)" if live is not None else " (close)"
             lines.append("%s  >>> NOW%s <<<" % (format(p, ",.1f"), tag))
         else:
-            lines.append("%s  %-6s %+.0f" % (format(p, ",.1f"), label, p - price))
+            lines.append("%s  %-6s %-7s %+.0f" % (
+                format(p, ",.1f"), label, _level_colour(label), p - price))
     lines.append("feed: %s%s" % (feed_name, fallback_note))
     if gap:
         lines.append(gap)
@@ -1251,7 +1349,8 @@ def selftest():
     for needle in ("ORB LONG", "ORB SHORT", "Entry 4,072.0", "Entry 4,058.3",
                    "TP1 4,090.0", "Exit: trail 40%", "TOP 2",
                    "1R $", "$ at 1 lot", "Invalid 15m close",
-                   "Context:", "🔥 BEST:", "👀 WATCH", "1H bias"):
+                   "Context:", "🔥 BEST:", "👀 WATCH", "1H bias",
+                   "🔔 ALERTS", "Key levels"):
         if needle not in body_ok:
             print("FAIL scalp card: missing %r" % needle)
             ok = False
@@ -1278,11 +1377,11 @@ def selftest():
     PRICE_OFFSET = 2.0
     _, body_off = make_card(candles, 4064.0, mon, "NY", "test", "", "")
     PRICE_OFFSET = saved_offset
-    if "4,092.0  PDH" not in body_off:
-        print("FAIL offset: PDH should read 4,092.0 with +2.0 offset")
+    if "4,074.0  ORB H" not in body_off:
+        print("FAIL offset: ORB H should read 4,074.0 with +2.0 offset")
         ok = False
     else:
-        print("PASS offset: PDH reads 4,092.0 with +2.0 offset")
+        print("PASS offset: ORB H reads 4,074.0 with +2.0 offset")
 
     # --- Checklist helpers: swings, structure, unbroken, MACD line ---
     # Crafted 15m series: swing H 4020 (bar 2), swing L 3990 (bar 5),
