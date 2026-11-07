@@ -211,34 +211,73 @@ def _run_fetcher(name, fallback, fn):
             "candles": candles, "live": live, "error": err}
 
 
-def fetch_all_feeds():
-    """Fetch every configured feed. Order is the preference order."""
-    feeds = []
+def _feed_specs():
+    """Ordered (name, fallback, fetch_fn-or-None) for every feed. A None
+    fn means the feed is unconfigured (stub result, no HTTP call)."""
+    specs = []
     if TL_EMAIL and TL_PASSWORD and TL_SERVER:
-        feeds.append(_run_fetcher("TradeLocker demo", False, fetch_tradelocker))
+        specs.append(("TradeLocker demo", False, fetch_tradelocker))
     else:
-        feeds.append({"name": "TradeLocker demo", "fallback": False,
-                      "candles": None, "live": None,
-                      "error": "demo credentials / server not set"})
+        specs.append(("TradeLocker demo", False, None))
     if OANDA_API_TOKEN:
-        feeds.append(_run_fetcher("OANDA XAU/USD", False, fetch_oanda))
+        specs.append(("OANDA XAU/USD", False, fetch_oanda))
     else:
-        feeds.append({"name": "OANDA XAU/USD", "fallback": False,
-                      "candles": None, "live": None,
-                      "error": "OANDA_API_TOKEN not set"})
-    feeds.append(_run_fetcher(
-        "Binance perp XAUUSDT", True,
-        lambda: fetch_binance(
-            "https://fapi.binance.com/fapi/v1/klines?symbol=XAUUSDT&interval=15m&limit=500")))
-    feeds.append(_run_fetcher(
-        "Bybit perp XAUUSDT", True,
-        lambda: fetch_bybit(
-            "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT&interval=15&limit=500")))
-    feeds.append(_run_fetcher(
-        "Binance spot PAXGUSDT", True,
-        lambda: fetch_binance(
-            "https://data-api.binance.vision/api/v3/klines?symbol=PAXGUSDT&interval=15m&limit=500")))
+        specs.append(("OANDA XAU/USD", False, None))
+    specs.append(("Binance perp XAUUSDT", True,
+                  lambda: fetch_binance(
+                      "https://fapi.binance.com/fapi/v1/klines?symbol=XAUUSDT&interval=15m&limit=500")))
+    specs.append(("Bybit perp XAUUSDT", True,
+                  lambda: fetch_bybit(
+                      "https://api.bybit.com/v5/market/kline?category=linear&symbol=XAUUSDT&interval=15&limit=500")))
+    specs.append(("Binance spot PAXGUSDT", True,
+                  lambda: fetch_binance(
+                      "https://data-api.binance.vision/api/v3/klines?symbol=PAXGUSDT&interval=15m&limit=500")))
+    return specs
+
+
+def _stub_result(name, fallback, error):
+    return {"name": name, "fallback": fallback,
+            "candles": None, "live": None, "error": error}
+
+
+def fetch_all_feeds():
+    """Fetch every configured feed. Order is the preference order.
+    Used by feedcheck, which compares all feeds."""
+    feeds = []
+    for name, fallback, fn in _feed_specs():
+        if fn is None:
+            feeds.append(_stub_result(
+                name, fallback,
+                "demo credentials / server not set" if name.startswith("TradeLocker")
+                else "OANDA_API_TOKEN not set"))
+        else:
+            feeds.append(_run_fetcher(name, fallback, fn))
     return feeds
+
+
+def fetch_first_fresh(kind, now_ms):
+    """Fetch feeds in preference order, stopping at the first fresh one.
+    Used by briefing, which only prices from one feed. TradeLocker and
+    OANDA are always fetched first (they feed the gap line); the fallback
+    chain stops at the first feed with enough fresh candles. Returns
+    (active_or_None, results_so_far)."""
+    results = []
+    for name, fallback, fn in _feed_specs():
+        if fn is None:
+            results.append(_stub_result(
+                name, fallback,
+                "demo credentials / server not set" if name.startswith("TradeLocker")
+                else "OANDA_API_TOKEN not set"))
+            continue
+        r = _run_fetcher(name, fallback, fn)
+        results.append(r)
+        # Gap feeds (TradeLocker, OANDA) are always collected; the fallback
+        # chain stops at the first usable feed.
+        if not name.startswith(("TradeLocker", "OANDA")):
+            if r["candles"] is not None and not (
+                    kind == "NY" and is_stale(r["candles"], now_ms)):
+                break
+    return pick_active(results, kind, now_ms), results
 
 
 def price_of(result):
@@ -729,9 +768,16 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
     rows.sort(key=lambda x: -x[0])
 
     def build_setup(label, direction, entry, cond, ok=True, check_ran=True,
-                    invalid=None):
+                    invalid=None, risk_override=None):
         """A scalp setup: entry, 1xATR stop, TPs at the successive levels
         ahead, a 0-5 score and a TRADE / NO TRADE verdict.
+        Stop rule (clamp): stop = max(ATR, 10) pts, but if the 15m ATR is
+        over 15 pts the market is too wild for a scalp - the setup is
+        NO TRADE (skip it, do not squeeze the stop to 15).
+        risk_override: an explicit stop distance in points (used by the
+        liquidity-zone setups, whose stop sits past the sweep extreme
+        plus 0.25 ATR, clamped to 10-15). The caller skips the setup
+        entirely when that distance would exceed 15.
         check_ran only applies to breakout entries (price may already have
         blown past the level); retest entries are pending pullbacks, so the
         price being past the level is the setup itself, not a miss.
@@ -740,8 +786,8 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
         level by 0.25 ATR for a retest."""
         if atr is None or atr <= 0:
             return None
-        stop = entry - atr if direction == "long" else entry + atr
-        risk = abs(entry - stop)
+        risk = risk_override if risk_override is not None else max(atr, 10.0)
+        stop = entry - risk if direction == "long" else entry + risk
         ahead = sorted([p for p in levels.values()
                         if (p > entry if direction == "long" else p < entry)],
                        reverse=(direction == "short"))
@@ -769,6 +815,8 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
         if macd_ok:
             score += 1
         reasons = []
+        if atr > 15.0:
+            reasons.append("15m ATR %.1f > 15 max — too wild, skip" % atr)
         if not ok:
             reasons.append("ORB range %.1f pts: SKIP" % orb_range)
         if not tps:
@@ -882,6 +930,59 @@ def _make_card_base(candles, live, now, kind, feed_name, fallback_note, gap, dai
                             invalid=(lv + 0.25 * atr, "above"))
         if s:
             setups.append(s)
+    # Liquidity zones: a session level (PDH/PDL, ASIA H/L, LON H/L) with a
+    # zone above a high [level, level + 0.5 ATR] or below a low
+    # [level - 0.5 ATR, level]. Price must penetrate into the zone (high
+    # >= level + 0.25 ATR, or low <= level - 0.25 ATR), then a 15m candle
+    # closes back outside it within 5 bars - fade it (short off a high
+    # zone, long off a low zone). Stop past the furthest extreme reached
+    # inside the zone + 0.25 ATR, clamped to 10-15 (skip if over 15).
+    # Session levels only - EQH/EQL zones are a separate add-on, not on.
+    if atr is not None:
+        for label in ("PDH", "PDL", "ASIA H", "ASIA L", "LON H", "LON L"):
+            if label not in raw_levels:
+                continue
+            lv = raw_levels[label]
+            is_high = label.endswith("H")
+            conf_ms = formed_ms[label]
+            extreme = None
+            pen_idx = None
+            for i, c in enumerate(candles):
+                if c["t"] < conf_ms:
+                    continue
+                if extreme is None:
+                    if is_high and c["h"] >= lv + 0.25 * atr:
+                        extreme = c["h"]
+                        pen_idx = i
+                    elif not is_high and c["l"] <= lv - 0.25 * atr:
+                        extreme = c["l"]
+                        pen_idx = i
+                    continue
+                if is_high:
+                    extreme = max(extreme, c["h"])
+                else:
+                    extreme = min(extreme, c["l"])
+                if i - pen_idx > 5:
+                    break
+                closed_out = (c["c"] < lv) if is_high else (c["c"] > lv)
+                if not closed_out:
+                    continue
+                entry = c["c"]
+                direction = "short" if is_high else "long"
+                stop_dist = abs(extreme - entry) + 0.25 * atr
+                if stop_dist > 15.0:
+                    break
+                risk_ov = max(stop_dist, 10.0)
+                cond = ("sweep above %s, close back below" % label
+                        if is_high else
+                        "sweep below %s, close back above" % label)
+                inv = (lv, "above") if is_high else (lv, "below")
+                s = build_setup("LIQZONE SHORT" if is_high else "LIQZONE LONG",
+                                direction, entry, cond,
+                                invalid=inv, risk_override=risk_ov)
+                if s:
+                    setups.append(s)
+                break
     setups.sort(key=lambda s: (not s["trade"], -s["score"], -s["room"]))
 
     # WATCH: levels not broken yet, with the full plan for when they break.
@@ -1136,6 +1237,26 @@ def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=Non
     return title, "\n".join(lines[:-1] + extra + lines[-1:])
 
 
+# Prop firm line ($200k account): change the 3 numbers if the account changes.
+PROP_ACCOUNT, PROP_RISK, PROP_LOT_CAP = 200000, 1000.0, 1.5
+_make_card_prev = make_card
+
+
+def make_card(*args, **kwargs):
+    title, body = _make_card_prev(*args, **kwargs)
+    kind = args[3] if len(args) > 3 else kwargs.get("kind")
+    if kind != "NY":
+        return title, body
+
+    def lots(pts):
+        return min(PROP_LOT_CAP, int(PROP_RISK / (pts * 100.0) * 100) / 100.0)
+
+    line = "PROP $%dk: risk $%s | SL max 15 pts = %.2f lots | 10 pts = %.2f lots | day limit $6,000" % (
+        PROP_ACCOUNT // 1000, format(PROP_RISK, ",.0f"), lots(15), lots(10))
+    parts = body.split("\n")
+    return title, "\n".join(parts[:1] + [line] + parts[1:])
+
+
 # ============================ NTFY ============================
 def send_ntfy(title, body, priority=3, tags="chart_with_upwards_trend"):
     print("----- %s -----" % title)
@@ -1202,8 +1323,7 @@ def briefing():
         return 0
 
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    results = fetch_all_feeds()
-    active = pick_active(results, kind, now_ms)
+    active, results = fetch_first_fresh(kind, now_ms)
     if active is None:
         errors = ["%s: %s" % (r["name"], r["error"]) for r in results]
         send_ntfy("GOLD BRIEFING FAILED",
@@ -1265,7 +1385,7 @@ def selftest():
         _row(datetime.combine(mon_d, time(8, 0), ET), 4060, 4072.00, 4058.30, 4064.00),
         _row(datetime.combine(mon_d, time(8, 15), ET), 4064, 4065, 4062, 4063),
     ]
-    items, orb, partial = build_levels(candles, mon, "NY")
+    items, orb, _partial = build_levels(candles, mon, "NY")
     by_label = {label: p for (p, label) in items}
     check("Mon PDH (Friday session)", by_label.get("PDH"), 4090.00)
     check("Mon PDL (Friday session)", by_label.get("PDL"), 4027.83)
@@ -1309,8 +1429,12 @@ def selftest():
         print("PASS ORB filter: 20.0 is SKIP")
 
     # --- Scalp card: ranked setups with entry / SL / TPs / exit ---
-    for needle in ("ORB LONG", "ORB SHORT", "Entry 4,072.0", "Entry 4,058.3",
-                   "TP1 4,090.0", "Exit: trail 40%", "TOP 2",
+    # The synthetic Monday has a LON H liquidity-zone sweep (08:00 high
+    # 4072.00 penetrates the zone, 08:15 closes back below 4066.40), so the
+    # LIQZONE SHORT is the BEST setup and the card tops out at 3, not 2.
+    for needle in ("ORB LONG", "ORB SHORT", "LIQZONE SHORT", "Entry 4,072.0",
+                   "Entry 4,058.3", "Entry 4,063.0",
+                   "TP1 4,090.0", "Exit: trail 40%", "TOP 3",
                    "Risk ", "ORB range", "Invalid 15m close",
                    "Context:", "🔥 BEST:", "👀 WATCH", "1H bias",
                    "🔔 ALERTS", "Key levels"):
