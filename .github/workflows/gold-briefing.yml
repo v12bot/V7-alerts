@@ -643,6 +643,19 @@ jobs:
                   ahead = sorted([p for p in tp_levels.values()
                                   if (p > entry if direction == "long" else p < entry)],
                                  reverse=(direction == "short"))
+                  # Targets are zones, not lines: drop levels inside the entry zone
+                  # (within 3 pts of entry — TP1 at 0.0R is not a target) and merge
+                  # levels within 3 pts of each other, so TP1 is the first
+                  # meaningful level. The furthest level (room) is unchanged unless
+                  # every level ahead was in the zone.
+                  _ahead = []
+                  for p in ahead:
+                      if abs(p - entry) < 3.0:
+                          continue
+                      if _ahead and abs(p - _ahead[-1]) < 3.0:
+                          continue
+                      _ahead.append(p)
+                  ahead = _ahead
                   tps = []
                   for p in ahead[:4]:
                       r = ((p - entry) / risk if direction == "long"
@@ -1126,6 +1139,19 @@ jobs:
                   ahead = sorted([p for p in levels.values()
                                   if (p > entry if direction == "long" else p < entry)],
                                  reverse=(direction == "short"))
+                  # Targets are zones, not lines: drop levels inside the entry zone
+                  # (within 3 pts of entry — TP1 at 0.0R is not a target) and merge
+                  # levels within 3 pts of each other, so TP1 is the first
+                  # meaningful level. The furthest level (room) is unchanged unless
+                  # every level ahead was in the zone.
+                  _ahead = []
+                  for p in ahead:
+                      if abs(p - entry) < 3.0:
+                          continue
+                      if _ahead and abs(p - _ahead[-1]) < 3.0:
+                          continue
+                      _ahead.append(p)
+                  ahead = _ahead
                   tps = []
                   for p in ahead[:4]:
                       r = ((p - entry) / risk if direction == "long"
@@ -1807,7 +1833,7 @@ jobs:
               # trail reminder is gone entirely (his rule, he knows it); the adopted
               # give-back trail is 20% (Round 2, Nov 7), not 40%.
               for needle in ("LIQZONE SHORT", "Entry 4,063.0",
-                             "TPs 4,058.3", "⚡ EXECUTE",
+                             "TPs 4,058.3", "TPs 4,058.3/4,041.1/4,027.8", "⚡ EXECUTE",
                              "Risk ", "ORB range", "Invalid 15m close",
                              "Context:", "🔶 PREPARE", "👀 WATCH", "1H bias",
                              "🔔 ALERTS", "Key levels",
@@ -1963,6 +1989,7 @@ jobs:
             git commit -m "Update gold monitor state"
             git push
           fi
+
 
 
 
