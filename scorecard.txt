@@ -11,10 +11,7 @@ LIQZONE SHORT 🟢 TRADE · 3/5
 Entry 4,063.0 · SL 4,075.3 · Risk 12.3
 TPs 4,058.3/4,041.1/4,027.8 (0.4R/1.8R/2.9R) · Invalid 15m close above 4,066.4
 Why: room 2.9R · vol ✗ · VWAP ✓ · MACD ✗ · 1H bias ~
-🔔 ALERTS — set these 3 in TradingView (trigger prices of the decisions)
-1. 4,090.0  SELL ZONE         +26
-2. 4,027.8  BUY ZONE         -36
-3. 4,093.0  NO SHORTS         +29
+🔔 ALERTS — none needed, price is at the entry: act on the EXECUTE card
 
 🔶 PREPARE
 SELL ZONE (15m rejection at 4,090.0)
@@ -48,10 +45,9 @@ RETEST SHORT 🟢 TRADE · 4/5
 Entry 4,062.2 · SL 4,072.2 · Risk 10.0
 TPs 4,056.1/4,053.1/4,040.7 (0.6R/0.9R/2.2R) · Invalid 15m close above 4,063.9
 Why: room 2.2R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ✓
-🔔 ALERTS — set these 3 in TradingView (trigger prices of the decisions)
+🔔 ALERTS — set these 2 in TradingView (trigger prices of the decisions)
 1. 4,062.2  RETEST SHORT         +7
-2. 3,894.0  NO LONGS         -162
-3. 3,909.0  BUY ZONE         -147
+2. 4,066.4  VWAP BREAK LONG         +11
 
 🔶 PREPARE
 VWAP BREAK LONG (15m close above VWAP 4,066.4)
