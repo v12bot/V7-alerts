@@ -99,6 +99,12 @@ jobs:
           Nov 8 2026: plan setups (SELL/BUY ZONE at the 4H + nearest daily high/low,
           VWAP BREAK) compete for EXECUTE and lead PREPARE/WATCH; a zone alert
           always carries its NO SHORTS / NO LONGS invalidation alert.
+          Nov 8 2026: alerts only within 15 pts of price (ALERT_MAX_DIST); NO SHORTS /
+          NO LONGS only when 5+ pts from its own entry alert (INVAL_MIN_GAP). NY card
+          runs whenever gold is open (market_open), not in a fixed window; all-day
+          swing alert sends a GOLD SWING card when a 4H swing setup passes the gate;
+          failure notices throttled to 1/hour. The scheduled Wednesday 12:00 swing
+          card is gone (those runs now build NY cards; _swing_alert covers swings).
           Nov 8 2026: scorecard mode added (MODE=scorecard sends the two test
           cards in scorecard.txt via ntfy, one message each; manual runs only).]
 
@@ -135,6 +141,7 @@ jobs:
           import json
           import os
           import sys
+          import time as _time
           import urllib.request
           from datetime import datetime, time, timedelta, timezone
           from zoneinfo import ZoneInfo
@@ -165,10 +172,10 @@ jobs:
           # When a scheduled run may send (minutes after midnight, ET). GitHub can
           # delay scheduled runs, so the windows are wide - but they must stay clear
           # of the wrong-season cron (07:25 / 09:25 ET and 17:05 / 19:05 ET Sunday).
-          NY_WINDOW = (7 * 60 + 30, 9 * 60 + 20)
+          # Nov 8 2026: the scalp card and the swing check now run whenever gold is
+          # open (market_open below), not in fixed windows. Only the Sunday week-open
+          # card keeps a window. SWING_WINDOW is used only by manual FORCE runs.
           SUNDAY_WINDOW = (17 * 60 + 35, 18 * 60 + 35)
-          # Wednesday midweek swing check (12:00-12:30 ET). Outside the NY window
-          # (07:30-09:20) so it never collides with the scalp briefing.
           SWING_WINDOW = (12 * 60, 12 * 60 + 30)
           # Swing alerts on/off: set SWING_ALERTS=0 (env var or repo variable) to
           # switch the twice-weekly swing section off entirely.
@@ -180,6 +187,13 @@ jobs:
           # Price within this many points of an entry = already AT the entry: the card
           # says so and no alert is listed (an alert would fire instantly / never help).
           AT_ENTRY_PTS = 2.0
+          # An alert is only listed when its trigger is within this many points of
+          # price (Nov 8 2026): farther levels stay as PREPARE/WATCH with no alert,
+          # so the 3 TradingView slots are never spent on levels price cannot reach.
+          ALERT_MAX_DIST = 15.0
+          # A NO SHORTS / NO LONGS alert is only listed when it is at least this far
+          # from its own entry alert (otherwise it just doubles the same level).
+          INVAL_MIN_GAP = 5.0
           # A liquidity-sweep entry older than this many 15m bars is history, not a signal.
           MAX_SIGNAL_AGE_BARS = 8
 
@@ -540,6 +554,37 @@ jobs:
               for tr in trs[n:]:
                   a = (a * (n - 1) + tr) / n
               return a
+
+
+          def select_alerts(price, cands):
+              """Pick the TradingView alerts from (trigger price, label, setup) in
+              priority order: skip a trigger price is already at (<= AT_ENTRY_PTS) or
+              farther than ALERT_MAX_DIST, merge triggers within 3 pts, then add the
+              invalidation alert (NO SHORTS / NO LONGS) of the first zone alert,
+              replacing the lowest-priority other alert if all 3 slots are used. The
+              invalidation alert is exempt from ALERT_MAX_DIST (it is tied to the
+              stop, which sits past the zone) but must be INVAL_MIN_GAP from its
+              entry alert."""
+              out = []
+              for p, lab, s in cands:
+                  d = abs(p - price)
+                  if d <= AT_ENTRY_PTS or d > ALERT_MAX_DIST:
+                      continue
+                  if all(abs(p - q) >= 3.0 for q, _, _x in out):
+                      out.append((p, lab, s))
+              owner = next((x for x in out if x[2].get("inval")), None)
+              if owner is not None:
+                  ip, il = owner[2]["inval"]
+                  if (abs(ip - owner[0]) >= INVAL_MIN_GAP
+                          and all(abs(ip - q) >= 3.0 for q, _, _x in out)):
+                      if len(out) < 3:
+                          out.append((ip, il, {}))
+                      else:
+                          for k in range(len(out) - 1, -1, -1):
+                              if out[k] is not owner:
+                                  out[k] = (ip, il, {})
+                                  break
+              return out
 
 
           def plan_geometry(price, atr, vwap, h4_h, h4_l, d_h, d_l):
@@ -1208,8 +1253,8 @@ jobs:
               swing_defs = []
               if atr:
                   m15_sw = _swing_points(candles, bar_ms=15 * 60 * 1000)
-                  for kind, direction, tag in (("H", "long", "15m H"), ("L", "short", "15m L")):
-                      recent = [s for s in m15_sw if s["kind"] == kind
+                  for sw_kind, direction, tag in (("H", "long", "15m H"), ("L", "short", "15m L")):
+                      recent = [s for s in m15_sw if s["kind"] == sw_kind
                                 and s["conf_ms"] <= now_ms][-2:]
                       for n, s in enumerate(reversed(recent), 1):
                           if abs(s["price"] - raw_price) > 3.0 * atr:
@@ -1688,26 +1733,7 @@ jobs:
                   _cands.append((best["entry"], best["label"], best))
               for _s in watch_setups[:2]:
                   _cands.append((_s["entry"], _lab_of(_s), _s))
-              alert_levels = []
-              for _p, _lab, _s in _cands:
-                  if abs(_p - price) <= AT_ENTRY_PTS:
-                      continue  # price is already there: an alert would be pointless
-                  if all(abs(_p - q) >= 3.0 for q, _, _x in alert_levels):
-                      alert_levels.append((_p, _lab, _s))
-              # A zone alert always comes with its invalidation alert (NO SHORTS /
-              # NO LONGS): it replaces the lowest-priority other alert if the
-              # list is full.
-              _owner = next((x for x in alert_levels if x[2].get("inval")), None)
-              if _owner is not None:
-                  _ip, _il = _owner[2]["inval"]
-                  if all(abs(_ip - q) >= 3.0 for q, _, _x in alert_levels):
-                      if len(alert_levels) < 3:
-                          alert_levels.append((_ip, _il, {}))
-                      else:
-                          for _k in range(len(alert_levels) - 1, -1, -1):
-                              if alert_levels[_k] is not _owner:
-                                  alert_levels[_k] = (_ip, _il, {})
-                                  break
+              alert_levels = select_alerts(price, _cands)
               if alert_levels:
                   lines.append("🔔 ALERTS — set these %d in TradingView "
                                "(trigger prices of the decisions)" % len(alert_levels))
@@ -1717,6 +1743,9 @@ jobs:
               elif at_entry:
                   lines.append("🔔 ALERTS — none needed, price is at the entry: "
                                "act on the EXECUTE card")
+              elif any(abs(_c[0] - price) > ALERT_MAX_DIST for _c in _cands):
+                  lines.append("🔔 ALERTS — none within %d pts of price, "
+                               "nothing to set" % int(ALERT_MAX_DIST))
               else:
                   lines.append("🔔 ALERTS — no qualified setups right now, "
                                "nothing to set")
@@ -1863,24 +1892,66 @@ jobs:
           STATE_FILE = "gold-state.json"
 
 
-          def _read_state():
-              """(signature, ET date) of the last NY card sent, or (None, None)."""
+          def _load_state():
+              """The monitor state dict (NY signature/date, swing signature/date,
+              last failure notice). {} when the file is missing or unreadable."""
               try:
                   with open(STATE_FILE) as f:
                       d = json.load(f)
-                  return d.get("signature"), d.get("date")
+                  return d if isinstance(d, dict) else {}
               except Exception:
-                  return None, None
+                  return {}
 
 
-          def _write_state(sig):
+          def _save_state(**kv):
+              """Merge keys into the state file (NY signature, swing signature, last
+              failure notice share one file)."""
+              d = _load_state()
+              d.update(kv)
+              d["sent_at"] = datetime.now(ET).isoformat()
               try:
                   with open(STATE_FILE, "w") as f:
-                      json.dump({"signature": sig,
-                                 "date": datetime.now(ET).date().isoformat(),
-                                 "sent_at": datetime.now(ET).isoformat()}, f)
+                      json.dump(d, f)
               except Exception as e:  # noqa: BLE001
                   print("State write failed:", type(e).__name__, e)
+
+
+          def market_open(now):
+              """Spot gold hours (ET): Sun 18:00 to Fri 17:00, with a daily break
+              17:00-18:00 Mon-Thu."""
+              wd, mins = now.weekday(), now.hour * 60 + now.minute
+              if wd == 5:
+                  return False
+              if wd == 6:
+                  return mins >= 18 * 60
+              if wd == 4:
+                  return mins < 17 * 60
+              return not (17 * 60 <= mins < 18 * 60)
+
+
+          def _swing_alert(candles, live, now):
+              """All-day swing check: sends a GOLD SWING card only when a 4H swing
+              setup passes the gate (TRADE) and differs from the last one sent
+              today. Never sends a 'nothing' card."""
+              if not SWING_ALERTS:
+                  return
+              price = (live if live is not None else candles[-1]["c"]) + PRICE_OFFSET
+              swing = get_swing_setups(candles, now, price - PRICE_OFFSET, "SWING")
+              best = next((s for s in swing if s["trade"]), None)
+              if best is None:
+                  return
+              sig = "SWING:%s|%.1f|%.1f|%d" % (
+                  best["label"], best["entry"], best["stop"], best["score"])
+              st = _load_state()
+              today = now.date().isoformat()
+              if st.get("swing_sig") == sig and st.get("swing_date") == today:
+                  return
+              lines = ["NOW %s" % format(price, ",.1f")]
+              lines.extend(_setup_block(
+                  best, "%s 🟢 TRADE · %d/5" % (best["label"], best["score"])))
+              lines.append("Held over news: red-folder news within 15 min → take profit or tighten the stop.")
+              if send_ntfy("GOLD SWING", "\n".join(lines)):
+                  _save_state(swing_sig=sig, swing_date=today)
 
 
           def briefing():
@@ -1892,23 +1963,34 @@ jobs:
                       kind = "SWING"
                   else:
                       kind = "SUNDAY" if (now.weekday() == 6 and mins >= SUNDAY_WINDOW[0]) else "NY"
-              elif now.weekday() == 2 and SWING_WINDOW[0] <= mins <= SWING_WINDOW[1]:
-                  kind = "SWING"
-              elif now.weekday() <= 4 and NY_WINDOW[0] <= mins <= NY_WINDOW[1]:
-                  kind = "NY"
               elif now.weekday() == 6 and SUNDAY_WINDOW[0] <= mins <= SUNDAY_WINDOW[1]:
                   kind = "SUNDAY"
+              elif market_open(now):
+                  kind = "NY"
               else:
-                  print("Outside the briefing window. Nothing sent.")
+                  print("Gold market closed. Nothing sent.")
                   return 0
 
               now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
               active, results = fetch_first_fresh(kind, now_ms)
               if active is None:
                   errors = ["%s: %s" % (r["name"], r["error"]) for r in results]
+                  # Scheduled runs happen all day: one failure notice per hour at most.
+                  st = _load_state()
+                  last_fail = st.get("fail_at")
+                  recent = False
+                  if last_fail and not FORCE:
+                      try:
+                          recent = (now - datetime.fromisoformat(last_fail)) < timedelta(hours=1)
+                      except Exception:
+                          recent = False
+                  if recent:
+                      print("No feed responded (failure notice already sent this hour).")
+                      return 1
                   send_ntfy("GOLD BRIEFING FAILED",
                             "No price feed responded.\n" + "\n".join(errors),
                             priority=4, tags="warning")
+                  _save_state(fail_at=now.isoformat())
                   return 1
 
               fallback_note = " (fallback - check offset)" if active["fallback"] else ""
@@ -1923,13 +2005,15 @@ jobs:
               # The state carries the date: yesterday's identical "nothing to trade"
               # signature must not swallow today's first card.
               if kind == "NY" and not FORCE:
-                  last_sig, last_date = _read_state()
-                  if last_sig == sig and last_date == now.date().isoformat():
+                  st = _load_state()
+                  if st.get("signature") == sig and st.get("date") == now.date().isoformat():
                       print("No change in decisions. Nothing sent.")
-                      return 0
-              sent = send_ntfy(title, body)
-              if sent and kind == "NY" and not FORCE:
-                  _write_state(sig)
+                  else:
+                      if send_ntfy(title, body):
+                          _save_state(signature=sig, date=now.date().isoformat())
+                  _swing_alert(active["candles"], active["live"], now)
+                  return 0
+              send_ntfy(title, body)
               return 0
 
 
@@ -2048,8 +2132,8 @@ jobs:
                              "Risk ", "Invalid 15m close",
                              "Context:", "🔶 PREPARE", "👀 WATCH", "1H bias",
                              "🔔 ALERTS", "Key levels",
-                             "SELL ZONE", "BUY ZONE", "NO SHORTS",
-                             "1. 4,090.0  SELL ZONE"):
+                             "SELL ZONE", "BUY ZONE",
+                             "price is at the entry"):
                   if needle not in body_ok:
                       print("FAIL scalp card: missing %r" % needle)
                       ok = False
@@ -2086,11 +2170,11 @@ jobs:
               PRICE_OFFSET = 2.0
               _, body_off, sig_off = make_card(candles, 4064.0, mon, "NY", "test", "", "")
               PRICE_OFFSET = saved_offset
-              if "4,092.0  SELL ZONE" not in body_off:
-                  print("FAIL offset: SELL ZONE alert should read 4,092.0 with +2.0 offset")
+              if "Entry 4,092.0" not in body_off:
+                  print("FAIL offset: SELL ZONE entry should read 4,092.0 with +2.0 offset")
                   ok = False
               else:
-                  print("PASS offset: SELL ZONE alert reads 4,092.0 with +2.0 offset")
+                  print("PASS offset: SELL ZONE entry reads 4,092.0 with +2.0 offset")
 
               # Same card twice -> same signature; shifted prices -> different one.
               _, _, sig_ok2 = make_card(candles, 4064.0, mon, "NY", "test", "", "")
@@ -2270,6 +2354,31 @@ jobs:
               gcheck("buy zone mirrors (entry 4022, stop 4007, 15 pts max)",
                      bz is not None and abs(bz["entry"] - 4022.0) < 0.01
                      and abs(bz["entry"] - bz["risk"] - 4007.0) < 0.01)
+
+              # --- Price 19 pts below the entry, zones 26+ pts away: nothing in reach ---
+              _, body_none, _ = make_card(candles, 4045.0, mon, "NY", "test", "", "")
+              gcheck("card: no alert within 15 pts says so",
+                     "none within 15 pts of price" in body_none and "1. " not in body_none)
+              _, body_near, _ = make_card(candles, 4080.0, mon, "NY", "test", "", "")
+              gcheck("card: sell zone alert listed at +10, NO SHORTS dropped (3 pts apart)",
+                     "1. 4,090.0  SELL ZONE" in body_near and "NO SHORTS" not in body_near)
+
+              # --- Alert selection: 15-pt reach, invalidation spacing ---
+              sz = {"inval": (4093.0, "NO SHORTS")}
+              al = select_alerts(4070.59, [(4078.0, "SELL ZONE", sz),
+                                           (4060.8, "VWAP BREAK SHORT", {}),
+                                           (4027.8, "BUY ZONE", {"inval": (4017.8, "NO LONGS")})])
+              gcheck("alerts: his real set (4078, 4060.8, NO SHORTS 4093), far buy zone dropped",
+                     [(round(p, 1), l) for p, l, _ in al]
+                     == [(4078.0, "SELL ZONE"), (4060.8, "VWAP BREAK SHORT"), (4093.0, "NO SHORTS")])
+              al = select_alerts(4080.0, [(4090.0, "SELL ZONE", {"inval": (4093.0, "NO SHORTS")})])
+              gcheck("alerts: NO SHORTS 3 pts from its entry is not listed",
+                     [l for _, l, _ in al] == ["SELL ZONE"])
+              al = select_alerts(4064.0, [(4090.0, "SELL ZONE", {}), (4027.8, "BUY ZONE", {})])
+              gcheck("alerts: nothing within 15 pts -> no alerts", al == [])
+              al = select_alerts(4070.0, [(4078.0, "A", sz), (4060.0, "B", {}), (4083.0, "C", {})])
+              gcheck("alerts: full list - invalidation replaces the lowest priority",
+                     [l for _, l, _ in al] == ["A", "B", "NO SHORTS"])
 
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
