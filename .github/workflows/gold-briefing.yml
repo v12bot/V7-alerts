@@ -82,7 +82,9 @@ jobs:
           [Safe fixes ported Nov 8 2026 from the patched review: ntfy JSON publish;
           4H bars aligned to the 17:00 ET forex day; weekly bars +3h; stale-sweep /
           through-stop rejection; AT ENTRY NOW. TP ladder and 2-pt invalidation
-          floor deliberately NOT ported.]
+          floor deliberately NOT ported. Two more fixes ported the same day:
+          monitor state carries the date (yesterday's signature can't swallow
+          today's first NY card); retest formation times are timezone-safe.]
 
           One short card before the New York session: prior trading day, Asia and
           London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
@@ -1257,7 +1259,7 @@ jobs:
               for label, t in (("PDH", time(0, 0)), ("PDL", time(0, 0)),
                                ("ASIA H", time(3, 0)), ("ASIA L", time(3, 0)),
                                ("LON H", time(8, 0)), ("LON L", time(8, 0))):
-                  formed_ms[label] = to_ms(datetime.combine(day, t))
+                  formed_ms[label] = to_ms(datetime.combine(day, t, tzinfo=ET))
               cand_defs = []
               cand_dir = {}
               for label in ("PDH", "PDL", "ASIA H", "ASIA L", "LON H", "LON L"):
@@ -1717,17 +1719,20 @@ jobs:
 
 
           def _read_state():
+              """(signature, ET date) of the last NY card sent, or (None, None)."""
               try:
                   with open(STATE_FILE) as f:
-                      return json.load(f).get("signature")
+                      d = json.load(f)
+                  return d.get("signature"), d.get("date")
               except Exception:
-                  return None
+                  return None, None
 
 
           def _write_state(sig):
               try:
                   with open(STATE_FILE, "w") as f:
                       json.dump({"signature": sig,
+                                 "date": datetime.now(ET).date().isoformat(),
                                  "sent_at": datetime.now(ET).isoformat()}, f)
               except Exception as e:  # noqa: BLE001
                   print("State write failed:", type(e).__name__, e)
@@ -1770,9 +1775,13 @@ jobs:
                                            daily=daily)
               # NY cards send only when a decision changed (15-min monitor rule).
               # Sunday/SWING briefings always send; forced runs always send.
-              if kind == "NY" and not FORCE and _read_state() == sig:
-                  print("No change in decisions. Nothing sent.")
-                  return 0
+              # The state carries the date: yesterday's identical "nothing to trade"
+              # signature must not swallow today's first card.
+              if kind == "NY" and not FORCE:
+                  last_sig, last_date = _read_state()
+                  if last_sig == sig and last_date == now.date().isoformat():
+                      print("No change in decisions. Nothing sent.")
+                      return 0
               sent = send_ntfy(title, body)
               if sent and kind == "NY" and not FORCE:
                   _write_state(sig)
