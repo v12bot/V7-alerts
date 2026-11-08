@@ -183,8 +183,6 @@ jobs:
           MODE = os.environ.get("MODE", "briefing").strip().lower() or "briefing"
           FORCE = os.environ.get("FORCE", "0").strip() == "1"
 
-          TRADINGVIEW_CHART = "https://www.tradingview.com/chart/?symbol=OANDA%3AXAUUSD"
-
 
           # ============================ DATA ============================
           def http_get(url):
@@ -1452,9 +1450,9 @@ jobs:
                       lines.append(" · ".join(ctx2))
               lines.append("")
               # Colour for a markup level, per the Gold Daily Checklist colour key:
-              # weekly purple, daily orange, 4H yellow, 1H blue, 15m green, ORB
-              # green. The card is plain text (ntfy), so the colour is written as a
-              # word — it tells him which colour to draw the line in TradingView.
+              # weekly purple, daily orange, 4H yellow, 1H blue, 15m green. The card
+              # is plain text (ntfy), so the colour is written as a word — it tells
+              # him which colour to draw the line in TradingView.
               def _level_colour(label):
                   if label.startswith("W "):
                       return "purple"
@@ -1464,7 +1462,7 @@ jobs:
                       return "yellow"
                   if label.startswith("1H "):
                       return "blue"
-                  if label.startswith("15m") or label.startswith("ORB"):
+                  if label.startswith("15m"):
                       return "green"
                   if label.startswith(("ASIA", "LON")):
                       return "green"
@@ -1609,7 +1607,7 @@ jobs:
               lines.append("")
               lines.append("Key levels")
               # The day's chart markup (Gold Daily Checklist line budget): weekly 1,
-              # daily 2, 4H 2, 1H 2, 15m up to 4, ORB 2. `markup` was computed above,
+              # daily 2, 4H 2, 1H 2, 15m up to 4. `markup` was computed above,
               # before EXECUTE, so the ALERTS and this list always agree. NOW is merged
               # in by price so the list reads top to bottom.
               _kl = sorted(markup + [(price, "NOW")], key=lambda x: -x[0])
