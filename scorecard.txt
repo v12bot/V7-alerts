@@ -1,0 +1,78 @@
+============================================================
+TEST CARD 1 — synthetic Monday 2026-11-09 08:25 ET (offset 0)
+============================================================
+TITLE: GOLD SCALPS NY
+NOW 4,064.0 (live) · 24h +0.5% | 4H +0.1% | 1H +0.1% | 15m -0.0%
+Context: W n/a · D n/a · 1H ↑ (mixed) · 4H H 4,090.0 L 4,027.8
+W/D swings: daily bars unavailable
+
+⚡ EXECUTE — AT ENTRY NOW (sweep above LON H, close back below)
+LIQZONE SHORT 🟢 TRADE · 3/5
+Entry 4,063.0 · SL 4,075.3 · Risk 12.3
+TPs 4,058.3/4,041.1/4,027.8 (0.4R/1.8R/2.9R) · Invalid 15m close above 4,066.4
+Why: room 2.9R · vol ✗ · VWAP ✓ · MACD ✗ · 1H bias ~
+🔔 ALERTS — set these 2 in TradingView (trigger prices of the decisions)
+1. 4,066.4  LON H  green   +2
+2. 4,041.1  LON L  green   -23
+
+🔶 PREPARE
+WATCH LON H (if 15m closes above 4,066.4, then pullback)
+Entry 4,066.4 · SL 4,053.4 · Risk 13.0
+TPs 4,071.2/4,090.0 (0.4R/1.8R) · Invalid 15m close below 4,063.1
+Why: room 1.8R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ~
+
+👀 WATCH
+WATCH LON L (if 15m closes below 4,041.1, then rally)
+Entry 4,041.1 · SL 4,054.1 · Risk 13.0
+TPs 4,027.8 (1.0R) · Invalid 15m close above 4,044.4
+Why: room 1.0R · vol ✗ · VWAP ✓ · MACD ✗ · 1H bias ~
+
+Key levels
+4,090.0  4H H   yellow  +26
+4,064.0  >>> NOW (live) <<<
+4,027.8  4H L   yellow  -36
+feed: test
+SIGNATURE: EXECUTE:LIQZONE SHORT|4063.0|4075.3|3|TRADE;PREPARE:WATCH LON H|4066.4;WATCH:WATCH LON L|4041.1
+
+============================================================
+TEST CARD 2 — Friday 2026-11-06 08:25 ET, PAXG data, offset 6.97
+============================================================
+TITLE: GOLD SCALPS NY
+NOW 4,055.7 (live) · 24h -1.4% | 4H -0.6% | 1H -0.3% | 15m -0.0%
+Context: W ↓ · D ↓ · 1H ↓ (LH/LL) · 4H H 4,144.2 L 4,040.7
+W H 4,696.0 / L 3,907.0 · D H 4,090.0 / L 3,897.0 · D next H above 4,090.0
+
+⚡ EXECUTE
+ORB LONG 🟢 TRADE · 3/5
+Entry 4,064.8 · SL 4,054.8 · Risk 10.0
+TPs 4,073.1/4,082.1/4,111.5/4,144.2 (0.8R/1.7R/4.7R/7.9R) · Invalid 15m close below 4,064.8
+Why: room 7.9R 🤑 · vol ✗ · VWAP ✓ · MACD ✗ · 1H bias ✗
+🔔 ALERTS — set these 3 in TradingView (trigger prices of the decisions)
+1. 4,064.8  ORB LONG         +9
+2. 4,053.1  LON L  green   -3
+3. 4,040.7  ASIA L green   -15
+
+🔶 PREPARE
+WATCH LON L (if 15m closes below 4,053.1, then rally)
+Entry 4,053.1 · SL 4,063.1 · Risk 10.0
+TPs 4,040.7 (1.2R) · Invalid 15m close above 4,054.8
+Why: room 1.2R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ✓
+
+👀 WATCH
+WATCH ASIA L (if 15m closes below 4,040.7, then rally)
+Entry 4,040.7 · SL 4,050.7 · Risk 10.0
+No TPs: no levels ahead · Invalid 15m close above 4,042.4
+Why: room 0.0R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ✓
+
+Key levels
+4,144.2  4H H   yellow  +88
+4,090.0  D H    orange  +34
+4,082.1  1H H   blue    +26
+4,073.1  15m H1 green   +17
+4,060.1  15m L1 green   +4
+4,055.7  >>> NOW (live) <<<
+4,040.7  4H L   yellow  -15
+3,907.0  W L    purple  -149
+3,897.0  D L    orange  -159
+feed: Binance spot PAXGUSDT (fallback - check offset)
+SIGNATURE: EXECUTE:ORB LONG|4064.8|4054.8|3|TRADE;PREPARE:WATCH LON L|4053.1;WATCH:WATCH ASIA L|4040.7
