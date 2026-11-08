@@ -855,6 +855,21 @@ jobs:
               return out_h, out_l
           
           
+          def _sane_daily(candles):
+              """Drop daily bars with impossible wicks (bad prints). A real gold
+              day never has a high 3% above both its open and close, or a low 3%
+              below both. PAXG's feed carries such prints, and they poison the
+              weekly/daily swing levels."""
+              out = []
+              for c in candles:
+                  hi = max(c["o"], c["c"])
+                  lo = min(c["o"], c["c"])
+                  if c["h"] > 1.03 * hi or c["l"] < 0.97 * lo:
+                      continue
+                  out.append(c)
+              return out or None
+          
+          
           def fetch_daily_for(name):
               """Daily bars for the active feed (context: weekly/daily trend). Best
               effort: returns a list of daily bars or None. TradeLocker daily is
@@ -1033,6 +1048,7 @@ jobs:
               d_macd = w_macd = None
               d_h = d_l = w_h = w_l = None
               d_above = None
+              daily = _sane_daily(daily) if daily else None
               if daily:
                   d_line = _macd_line_series(daily)
                   d_macd = d_line[-1] if d_line else None
@@ -1312,12 +1328,12 @@ jobs:
               for _d, label, lv, direction in watch_defs[:4]:
                   if direction == "long":
                       s = build_setup("WATCH " + label, "long", levels[label],
-                                      "if 15m closes above %s, then pullback" % format(lv, ",.1f"),
+                                      "if 15m closes above %s, then pullback" % format(levels[label], ",.1f"),
                                       check_ran=False,
                                       invalid=(levels[label] - 0.25 * atr, "below"))
                   else:
                       s = build_setup("WATCH " + label, "short", levels[label],
-                                      "if 15m closes below %s, then rally" % format(lv, ",.1f"),
+                                      "if 15m closes below %s, then rally" % format(levels[label], ",.1f"),
                                       check_ran=False,
                                       invalid=(levels[label] + 0.25 * atr, "above"))
                   if s:
@@ -1455,12 +1471,6 @@ jobs:
                              key=lambda x: abs(x[0] - price))
               markup = sorted(_keep_wd + _rest[:max(0, 10 - len(_keep_wd))],
                               key=lambda x: -x[0])
-              # The 3 TradingView alerts: the 3 markup levels closest to price.
-              # Alerts are levels to watch — the trade setup (entry, SL, TPs) is a
-              # separate thing, listed under EXECUTE.
-              _alert = sorted(((abs(p - price), p, lab) for p, lab in markup),
-                              key=lambda x: x[0])
-              alert_levels = [(p, lab) for _d, p, lab in _alert[:3]]
               # Three priority trade decisions.
               # EXECUTE: the qualified setup (score >= 3, room >= 1R, gates pass).
               # PREPARE: the developing setup closest to confirmation.
@@ -1475,6 +1485,39 @@ jobs:
                       setups[0]["label"], "; ".join(setups[0]["reasons"])))
               else:
                   lines.append("⚡ EXECUTE — no setup")
+              # The 3 TradingView alerts: the trigger prices of the three decisions
+              # (EXECUTE entry, PREPARE trigger, WATCH level), not the 3 nearest
+              # levels. An alert firing means a decision is live. Prices within
+              # 3 pts are the same zone, so they are deduped and the list is filled
+              # from the nearest markup levels.
+              _cands = []
+              if best is not None:
+                  _cands.append((best["entry"], best["label"]))
+              if watch_setups:
+                  _cands.append((watch_setups[0]["entry"],
+                                 watch_setups[0]["label"][len("WATCH "):]))
+              if len(watch_setups) > 1:
+                  _cands.append((watch_setups[1]["entry"],
+                                 watch_setups[1]["label"][len("WATCH "):]))
+              else:
+                  _used = (watch_setups[0]["label"][len("WATCH "):]
+                           if watch_setups else None)
+                  _nxt_a = next((m for m in sorted(markup, key=lambda x: abs(x[0] - price))
+                                 if m[1] != _used), None)
+                  if _nxt_a is not None:
+                      _cands.append((_nxt_a[0], _nxt_a[1]))
+              alert_levels = []
+              for _p, _lab in _cands:
+                  if all(abs(_p - q) >= 3.0 for q, _ in alert_levels):
+                      alert_levels.append((_p, _lab))
+              if len(alert_levels) < 3:
+                  for _d, _p, _lab in sorted(
+                          ((abs(p - price), p, lab) for p, lab in markup),
+                          key=lambda x: x[0]):
+                      if len(alert_levels) >= 3:
+                          break
+                      if all(abs(_p - q) >= 3.0 for q, _ in alert_levels):
+                          alert_levels.append((_p, _lab))
               if alert_levels:
                   lines.append("🔔 ALERTS — set these %d in TradingView" % len(alert_levels))
                   for i, (p, lab) in enumerate(alert_levels, 1):
@@ -1767,7 +1810,9 @@ jobs:
                              "TPs 4,058.3", "⚡ EXECUTE",
                              "Risk ", "ORB range", "Invalid 15m close",
                              "Context:", "🔶 PREPARE", "👀 WATCH", "1H bias",
-                             "🔔 ALERTS", "Key levels"):
+                             "🔔 ALERTS", "Key levels",
+                             "4,063.0  LIQZONE SHORT", "4,066.4  LON H",
+                             "4,041.1  LON L"):
                   if needle not in body_ok:
                       print("FAIL scalp card: missing %r" % needle)
                       ok = False
@@ -1877,6 +1922,9 @@ jobs:
                   else:
                       c += 0.5
                   daily.append(_row(d0 + timedelta(days=k), c, c + 2, c - 2, c))
+              # A bad print (high $9,740 on a $4,175 day) must be ignored, not
+              # become the daily/weekly swing high.
+              daily.append(_row(d0 + timedelta(days=200), 4175.0, 9740.0, 4170.0, 4175.0))
               _, body_daily, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "", daily=daily)
               for needle in ("D ↑", "D H 4,200.0 / L 4,146.0", "D next H above 4,200.0"):
                   if needle not in body_daily:
@@ -1884,6 +1932,11 @@ jobs:
                       ok = False
                   else:
                       print("PASS daily context: %r present" % needle)
+              if "9,740" in body_daily:
+                  print("FAIL daily filter: bad print 9,740 leaked into the card")
+                  ok = False
+              else:
+                  print("PASS daily filter: bad print 9,740 ignored")
           
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
@@ -1910,5 +1963,6 @@ jobs:
             git commit -m "Update gold monitor state"
             git push
           fi
+
 
 
