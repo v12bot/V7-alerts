@@ -1511,11 +1511,13 @@ jobs:
                       setups[0]["label"], "; ".join(setups[0]["reasons"])))
               else:
                   lines.append("⚡ EXECUTE — no setup")
-              # The 3 TradingView alerts: the trigger prices of the three decisions
-              # (EXECUTE entry, PREPARE trigger, WATCH level), not the 3 nearest
-              # levels. An alert firing means a decision is live. Prices within
-              # 3 pts are the same zone, so they are deduped and the list is filled
-              # from the nearest markup levels.
+              # The TradingView alerts: ONLY qualified trade opportunities.
+              # EXECUTE entry (a qualified setup), PREPARE trigger (a developing
+              # setup), WATCH (the next developing setup). No fillers: an ordinary
+              # level is never promoted to an alert, and no management slot —
+              # stop and take-profit fire on their own on TradeLocker, so no
+              # TradingView slot is spent on them. If fewer than 3 decisions
+              # exist, fewer alerts are listed (possibly none).
               _cands = []
               if best is not None:
                   _cands.append((best["entry"], best["label"]))
@@ -1525,30 +1527,19 @@ jobs:
               if len(watch_setups) > 1:
                   _cands.append((watch_setups[1]["entry"],
                                  watch_setups[1]["label"][len("WATCH "):]))
-              else:
-                  _used = (watch_setups[0]["label"][len("WATCH "):]
-                           if watch_setups else None)
-                  _nxt_a = next((m for m in sorted(markup, key=lambda x: abs(x[0] - price))
-                                 if m[1] != _used), None)
-                  if _nxt_a is not None:
-                      _cands.append((_nxt_a[0], _nxt_a[1]))
               alert_levels = []
               for _p, _lab in _cands:
                   if all(abs(_p - q) >= 3.0 for q, _ in alert_levels):
                       alert_levels.append((_p, _lab))
-              if len(alert_levels) < 3:
-                  for _d, _p, _lab in sorted(
-                          ((abs(p - price), p, lab) for p, lab in markup),
-                          key=lambda x: x[0]):
-                      if len(alert_levels) >= 3:
-                          break
-                      if all(abs(_p - q) >= 3.0 for q, _ in alert_levels):
-                          alert_levels.append((_p, _lab))
               if alert_levels:
-                  lines.append("🔔 ALERTS — set these %d in TradingView" % len(alert_levels))
+                  lines.append("🔔 ALERTS — set these %d in TradingView "
+                               "(trigger prices of the decisions)" % len(alert_levels))
                   for i, (p, lab) in enumerate(alert_levels, 1):
                       lines.append("%d. %s  %-6s %-7s %+.0f" % (
                           i, format(p, ",.1f"), lab, _level_colour(lab), p - price))
+              else:
+                  lines.append("🔔 ALERTS — no qualified setups right now, "
+                               "nothing to set")
               lines.append("")
               if watch_setups:
                   lines.append("🔶 PREPARE")
@@ -1989,6 +1980,7 @@ jobs:
             git commit -m "Update gold monitor state"
             git push
           fi
+
 
 
 
