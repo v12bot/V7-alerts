@@ -94,6 +94,8 @@ jobs:
           Nov 8 2026: ORB range line removed from the card (no ORB mentions
           except live trade decisions: the ORB breakout setup still prints
           as EXECUTE/PREPARE/WATCH and in ALERTS when it is a trade).
+          Nov 8 2026: VWAP now anchored at the most recent 18:00 ET (his TradingView
+          Session VWAP restarts 18:05 ET), so it exists all day.
           Nov 8 2026: scorecard mode added (MODE=scorecard sends the two test
           cards in scorecard.txt via ntfy, one message each; manual runs only).]
           
@@ -465,6 +467,16 @@ jobs:
               return begin, end
           
           
+          def vwap_anchor(now):
+              """Start of the current session VWAP: the most recent 18:00 ET (gold
+              reopen). His TradingView Session VWAP restarts at 18:05 ET; on 15m bars
+              the 18:00 bar is the one that holds 18:05, so it is the anchor."""
+              a = now.replace(hour=DAY_START_HOUR_ET, minute=0, second=0, microsecond=0)
+              if now < a:
+                  a -= timedelta(days=1)
+              return a
+          
+          
           def session_vwap(candles, start):
               s = to_ms(start)
               num = den = 0.0
@@ -623,13 +635,11 @@ jobs:
                       bias_1h = 1
                   elif h1_macd < 0 and h1_struct == -1:
                       bias_1h = -1
-              # Session VWAP from 08:00 ET today (None before it forms / on Sunday).
-              vwap = None
-              d08 = now.replace(hour=8, minute=0, second=0, microsecond=0)
-              if now >= d08:
-                  vwap = session_vwap(candles, d08)
-                  if vwap is not None:
-                      vwap += PRICE_OFFSET
+              # Session VWAP from the most recent 18:00 ET (None when no candles
+              # since then, e.g. Sunday before the open).
+              vwap = session_vwap(candles, vwap_anchor(now))
+              if vwap is not None:
+                  vwap += PRICE_OFFSET
               # Retest candidates: a confirmed 4H swing level that broke (a 4H close
               # beyond it after confirmation), with price near it now and not
               # invalidated (closed through by >0.25x 4H ATR). Long = breakout above
@@ -1004,8 +1014,7 @@ jobs:
               items, orb, partial = build_levels(candles, now, kind)
               rows = [(p + PRICE_OFFSET, label) for (p, label) in items]
               if kind == "NY":
-                  d08 = now.replace(hour=8, minute=0, second=0, microsecond=0)
-                  vwap = session_vwap(candles, d08)
+                  vwap = session_vwap(candles, vwap_anchor(now))
                   if vwap is not None:
                       vwap += PRICE_OFFSET
                       rows.append((vwap, "VWAP"))
@@ -1262,6 +1271,7 @@ jobs:
               # A level counts as broken only by a close beyond it AFTER its window
               # closed (PDH/PDL 00:00, ASIA 03:00, LON 08:00, swing levels at their
               # confirmation time) - a close before the level existed does not count.
+              d08 = now.replace(hour=8, minute=0, second=0, microsecond=0)
               orb_end_ms = to_ms(d08 + timedelta(minutes=15))
               day = now.date()
               formed_ms = {}
@@ -1806,6 +1816,7 @@ jobs:
               """Synthetic candles with known answers; verifies the maths. Sends nothing."""
               global PRICE_OFFSET
               ok = True
+              VWAP_WANT = 4064.45
           
               def check(name, got, want):
                   nonlocal ok
@@ -1836,7 +1847,7 @@ jobs:
                   _row(datetime.combine(mon_d, time(2, 45), ET), 4065, 4068, 4055, 4060),
                   _row(datetime.combine(mon_d, time(3, 0), ET), 4060, 4066.40, 4058, 4062),
                   _row(datetime.combine(mon_d, time(7, 45), ET), 4050, 4052, 4041.10, 4045),
-                  _row(datetime.combine(mon_d, time(8, 0), ET), 4060, 4072.00, 4058.30, 4064.00),
+                  _row(datetime.combine(mon_d, time(8, 0), ET), 4060, 4072.00, 4058.30, 4064.00, 10000),
                   _row(datetime.combine(mon_d, time(8, 15), ET), 4064, 4065, 4062, 4063),
               ]
               items, orb, _partial = build_levels(candles, mon, "NY")
@@ -1850,8 +1861,18 @@ jobs:
               check("Mon ORB H", by_label.get("ORB H"), 4072.00)
               check("Mon ORB L", by_label.get("ORB L"), 4058.30)
               check("Mon ORB range", (orb[0] - orb[1]) if orb else None, 13.70)
-              d08 = mon.replace(hour=8, minute=0, second=0, microsecond=0)
-              check("Mon VWAP", session_vwap(candles, d08), 4064.05)
+              check("Mon VWAP (anchored Sun 18:00 ET)",
+                    session_vwap(candles, vwap_anchor(mon)), VWAP_WANT)
+              for nm, when, want in (
+                      ("anchor Mon 08:25", mon, datetime(2026, 11, 8, 18, 0, tzinfo=ET)),
+                      ("anchor Mon 19:00", datetime(2026, 11, 9, 19, 0, tzinfo=ET),
+                       datetime(2026, 11, 9, 18, 0, tzinfo=ET)),
+                      ("anchor Tue 05:00", datetime(2026, 11, 10, 5, 0, tzinfo=ET),
+                       datetime(2026, 11, 9, 18, 0, tzinfo=ET))):
+                  got = vwap_anchor(when)
+                  print(("PASS " if got == want else "FAIL ") + "%s: %s" % (nm, got))
+                  if got != want:
+                      ok = False
           
               # --- Tuesday 2026-11-10 08:25 ET: prior day is the Monday session ---
               tue = datetime(2026, 11, 10, 8, 25, tzinfo=ET)
@@ -2143,6 +2164,7 @@ jobs:
           
           if __name__ == "__main__":
               sys.exit(main())
+          
           
           PYEOF
       - name: Save monitor state
