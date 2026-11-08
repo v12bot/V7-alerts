@@ -90,7 +90,10 @@ jobs:
           LONG/SHORT setup entries and the ORB range line is unchanged).
           Nov 8 2026: ASIA/LON H/L also dropped from the Key levels list
           (still used internally for retest/LIQZONE setups; they print as
-          setup entries when they are a live decision).]
+          setup entries when they are a live decision).
+          Nov 8 2026: ORB range line removed from the card (no ORB mentions
+          except live trade decisions: the ORB breakout setup still prints
+          as EXECUTE/PREPARE/WATCH and in ALERTS when it is a trade).]
 
           One short card before the New York session: prior trading day, Asia and
           London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
@@ -1412,11 +1415,6 @@ jobs:
               lines.append("NOW %s%s · %s" % (format(price, ",.1f"),
                                               " (live)" if live is not None else " (close)",
                                               tf_line))
-              if orb_range is not None:
-                  lines.append("ORB range %.1f pts: %s" % (
-                      orb_range, "OK" if orb_ok else "SKIP"))
-              else:
-                  lines.append("ORB: forms at 8:15 (first 15m candle after 8:00)")
               if partial:
                   lines.append("London levels are partial (session still open)")
               # Context: weekly/daily MACD arrows, 1H bias, 4H swings, W/D swings.
@@ -1542,8 +1540,15 @@ jobs:
                   lines.extend(_setup_block(
                       best, "%s 🟢 TRADE · %d/5" % (best["label"], best["score"])))
               elif setups:
-                  lines.append("⚡ EXECUTE — no qualified setup: top %s (%s)" % (
-                      setups[0]["label"], "; ".join(setups[0]["reasons"])))
+                  # No ORB mentions unless it is a live trade: when the top setup
+                  # is an ORB setup that did not qualify, say only that there is
+                  # no qualified setup (the range/score reason stays in the
+                  # monitor signature, not on the card).
+                  if setups[0]["label"].startswith("ORB"):
+                      lines.append("⚡ EXECUTE — no qualified setup")
+                  else:
+                      lines.append("⚡ EXECUTE — no qualified setup: top %s (%s)" % (
+                          setups[0]["label"], "; ".join(setups[0]["reasons"])))
               else:
                   lines.append("⚡ EXECUTE — no setup")
               # The TradingView alerts: ONLY qualified trade opportunities.
@@ -1857,23 +1862,27 @@ jobs:
               check("Tue PDH (Monday session)", by_label2.get("PDH"), 4080.00)
               check("Tue PDL (Monday session)", by_label2.get("PDL"), 4030.00)
 
-              # --- ORB filter boundaries, via the card text ---
+              # --- ORB range line is gone; the filter still gates the setups ---
+              # The ORB range no longer prints anywhere on the card, and when the
+              # top setup is an ORB setup that did not qualify, EXECUTE says only
+              # that there is no qualified setup (the reason stays in the monitor
+              # signature, not on the card).
               _, body_ok, sig_ok = make_card(candles, 4064.0, mon, "NY", "test", "", "")
-              if "ORB range 13.7 pts: OK" not in body_ok:
-                  print("FAIL ORB filter: 13.7 should be OK")
+              if "ORB range" in body_ok or "top ORB" in body_ok:
+                  print("FAIL ORB range line: should not appear on the card")
                   ok = False
               else:
-                  print("PASS ORB filter: 13.7 is OK")
+                  print("PASS ORB range line: absent from the card")
               wide = [dict(c) for c in candles]
               idx0800 = next(i for i, c in enumerate(candles)
                              if c["t"] == to_ms(datetime.combine(mon_d, time(8, 0), ET)))
               wide[idx0800] = _row(datetime.combine(mon_d, time(8, 0), ET), 4060, 4080.00, 4060.00, 4070)
               _, body_wide, _ = make_card(wide, 4070.0, mon, "NY", "test", "", "")
-              if "ORB range 20.0 pts: SKIP" not in body_wide:
-                  print("FAIL ORB filter: 20.0 should be SKIP")
+              if "ORB range" in body_wide or "top ORB" in body_wide:
+                  print("FAIL ORB range SKIP: wide ORB must not qualify or be named")
                   ok = False
               else:
-                  print("PASS ORB filter: 20.0 is SKIP")
+                  print("PASS ORB range SKIP: wide ORB neither qualifies nor is named")
 
               # --- Scalp card: three priority decisions with entry / SL / TPs / exit ---
               # The synthetic Monday has a LON H liquidity-zone sweep (08:00 high
@@ -1886,7 +1895,7 @@ jobs:
               # give-back trail is 20% (Round 2, Nov 7), not 40%.
               for needle in ("LIQZONE SHORT", "Entry 4,063.0",
                              "TPs 4,058.3", "TPs 4,058.3/4,041.1/4,027.8", "⚡ EXECUTE",
-                             "Risk ", "ORB range", "Invalid 15m close",
+                             "Risk ", "Invalid 15m close",
                              "Context:", "🔶 PREPARE", "👀 WATCH", "1H bias",
                              "🔔 ALERTS", "Key levels",
                              "4,066.4  LON H",
