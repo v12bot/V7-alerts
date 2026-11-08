@@ -87,7 +87,10 @@ jobs:
           today's first NY card); retest formation times are timezone-safe.
           Nov 8 2026: ORB H/L dropped from the Key levels list (they are the
           08:00 15m candle's high/low, already known; they still print as ORB
-          LONG/SHORT setup entries and the ORB range line is unchanged).]
+          LONG/SHORT setup entries and the ORB range line is unchanged).
+          Nov 8 2026: ASIA/LON H/L also dropped from the Key levels list
+          (still used internally for retest/LIQZONE setups; they print as
+          setup entries when they are a live decision).]
 
           One short card before the New York session: prior trading day, Asia and
           London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
@@ -1497,15 +1500,14 @@ jobs:
                   markup.append((h1_h[0] + PRICE_OFFSET, "1H H"))
               if h1_l:
                   markup.append((h1_l[0] + PRICE_OFFSET, "1H L"))
-              # 15m: nearest 4 of the 15m swings + ASIA/LON levels.
+              # 15m: nearest 4 of the 15m swings. (ASIA/LON H/L are NOT listed
+              # here: they are session levels he already marks on his chart. They
+              # still exist internally for retest/LIQZONE setups and print as setup
+              # entries when they are a live decision.)
               _f15 = []
               for nm, p, _dir, _cm in swing_defs:
                   if nm.startswith("15m"):
                       _f15.append((abs(p + PRICE_OFFSET - price), p + PRICE_OFFSET, nm))
-              for _p, lab in items:
-                  if lab in ("ASIA H", "ASIA L", "LON H", "LON L"):
-                      _p2 = _p + PRICE_OFFSET
-                      _f15.append((abs(_p2 - price), _p2, lab))
               _f15.sort(key=lambda x: x[0])
               for _d, _p, _lab in _f15[:4]:
                   markup.append((_p, _lab))
