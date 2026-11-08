@@ -43,12 +43,12 @@ Context: W ↓ · D ↓ · 1H ↓ (LH/LL) · 4H H 4,144.2 L 4,040.7
 W H 4,696.0 / L 3,907.0 · D H 4,090.0 / L 3,897.0 · D next H above 4,090.0
 
 ⚡ EXECUTE
-ORB LONG 🟢 TRADE · 3/5
-Entry 4,064.8 · SL 4,054.8 · Risk 10.0
-TPs 4,073.1/4,082.1/4,111.5/4,144.2 (0.8R/1.7R/4.7R/7.9R) · Invalid 15m close below 4,064.8
-Why: room 7.9R 🤑 · vol ✗ · VWAP ✓ · MACD ✗ · 1H bias ✗
+RETEST SHORT 🟢 TRADE · 4/5
+Entry 4,062.2 · SL 4,072.2 · Risk 10.0
+TPs 4,056.1/4,053.1/4,040.7 (0.6R/0.9R/2.2R) · Invalid 15m close above 4,063.9
+Why: room 2.2R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ✓
 🔔 ALERTS — set these 3 in TradingView (trigger prices of the decisions)
-1. 4,064.8  ORB LONG         +9
+1. 4,062.2  RETEST SHORT         +7
 2. 4,053.1  LON L  green   -3
 3. 4,040.7  ASIA L green   -15
 
@@ -75,4 +75,4 @@ Key levels
 3,907.0  W L    purple  -149
 3,897.0  D L    orange  -159
 feed: Binance spot PAXGUSDT (fallback - check offset)
-SIGNATURE: EXECUTE:ORB LONG|4064.8|4054.8|3|TRADE;PREPARE:WATCH LON L|4053.1;WATCH:WATCH ASIA L|4040.7
+SIGNATURE: EXECUTE:RETEST SHORT|4062.2|4072.2|4|TRADE;PREPARE:WATCH LON L|4053.1;WATCH:WATCH ASIA L|4040.7
