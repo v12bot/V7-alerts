@@ -8,11 +8,17 @@
 # section, and a Wednesday midday swing check (4H setups, held days/weeks).
 # At most 1 swing setup per send, so Sunday + Wednesday caps at 2/week.
 # Set the SWING_ALERTS repo variable to 0 to switch the swing section off.
+# Plus a 15-minute monitor on weekday NY sessions (07:30-16:00 ET): the
+# card is re-checked and only re-sent when EXECUTE, PREPARE or WATCH
+# changed (state in gold-state.json).
 #
 # Two cron copies each so it works in summer and winter time. The script
 # only sends inside the right ET window, so the wrong-season copy does
 # nothing (a run landing outside the window exits quietly).
 name: Gold briefing
+
+permissions:
+  contents: write
 
 on:
   schedule:
@@ -22,6 +28,14 @@ on:
     - cron: "5 23 * * 0"      # Sunday open, 6:05 PM ET in winter time
     - cron: "0 16 * * 3"      # Wednesday swing check, 12:00 ET in summer time
     - cron: "0 17 * * 3"      # Wednesday swing check, 12:00 ET in winter time
+    # 15-min monitor, weekday NY session 07:30-16:00 ET. The script only
+    # sends when EXECUTE, PREPARE or WATCH changed (state in gold-state.json).
+    - cron: "30,45 11 * * 1-5"  # monitor, summer time (07:30/07:45 ET)
+    - cron: "*/15 12-19 * * 1-5"  # monitor, summer time (08:00-15:45 ET)
+    - cron: "0 20 * * 1-5"      # monitor, summer time (16:00 ET)
+    - cron: "30,45 12 * * 1-5"  # monitor, winter time (07:30/07:45 ET)
+    - cron: "*/15 13-20 * * 1-5"  # monitor, winter time (08:00-15:45 ET)
+    - cron: "0 21 * * 1-5"      # monitor, winter time (16:00 ET)
   workflow_dispatch:
     inputs:
       mode:
@@ -36,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -76,6 +91,8 @@ jobs:
             briefing   (default) build and send the card, inside the time window
             feedcheck            compare every feed's price, so you can set PRICE_OFFSET
             selftest             verify the maths on synthetic candles, send nothing
+            NY runs send only when EXECUTE, PREPARE or WATCH changed (state in
+            gold-state.json); forced runs always send.
           
           Feeds, tried in order. The first one that works prices the card; the card
           always names the feed, so a fallback never passes silently.
@@ -949,7 +966,7 @@ jobs:
                   lines.append("feed: %s%s" % (feed_name, fallback_note))
                   if gap:
                       lines.append(gap)
-                  return "GOLD WEEK OPEN", "\n".join(lines)
+                  return "GOLD WEEK OPEN", "\n".join(lines), "SUNDAY"
           
               if kind == "SWING":
                   # Midweek swing check: 4H setups only (held days/weeks). Same
@@ -973,7 +990,7 @@ jobs:
                   lines.append("feed: %s%s" % (feed_name, fallback_note))
                   if gap:
                       lines.append(gap)
-                  return "GOLD SWINGS — MIDWEEK", "\n".join(lines)
+                  return "GOLD SWINGS — MIDWEEK", "\n".join(lines), "SWING"
           
               # ---- NY scalp card: ranked setups, then the levels list ----
               # Simple layout with a bit of pop: the best trade up top, one compact
@@ -1472,6 +1489,7 @@ jobs:
               else:
                   lines.append("🔶 PREPARE — no developing setup")
               lines.append("")
+              _nxt = None
               if len(watch_setups) > 1:
                   lines.append("👀 WATCH")
                   lines.extend(_setup_block(
@@ -1505,7 +1523,30 @@ jobs:
               lines.append("feed: %s%s" % (feed_name, fallback_note))
               if gap:
                   lines.append(gap)
-              return "GOLD SCALPS NY", "\n".join(lines)
+              # Decision signature for the 15-min monitor: only the three
+              # decisions, not the whole card (price and levels move constantly).
+              if best is not None:
+                  _sig_e = "EXECUTE:%s|%.1f|%.1f|%d|TRADE" % (
+                      best["label"], best["entry"], best["stop"], best["score"])
+              elif setups:
+                  _sig_e = "EXECUTE:none:%s|%s" % (
+                      setups[0]["label"], ";".join(setups[0]["reasons"]))
+              else:
+                  _sig_e = "EXECUTE:none"
+              if watch_setups:
+                  _sig_p = "PREPARE:%s|%.1f" % (
+                      watch_setups[0]["label"], watch_setups[0]["entry"])
+              else:
+                  _sig_p = "PREPARE:none"
+              if len(watch_setups) > 1:
+                  _sig_w = "WATCH:%s|%.1f" % (
+                      watch_setups[1]["label"], watch_setups[1]["entry"])
+              elif _nxt is not None:
+                  _sig_w = "WATCH:level:%.1f|%s" % (_nxt[0], _nxt[1])
+              else:
+                  _sig_w = "WATCH:none"
+              sig = ";".join((_sig_e, _sig_p, _sig_w))
+              return "GOLD SCALPS NY", "\n".join(lines), sig
           
           
           # ============================ NTFY ============================
@@ -1558,6 +1599,29 @@ jobs:
               return 0 if ok else 1
           
           
+          # Monitor state: the last sent NY decision signature, kept in the repo
+          # as gold-state.json so scheduled runs can tell a changed card from a
+          # repeat. Missing or unreadable state means "send" (safe fallback).
+          STATE_FILE = "gold-state.json"
+          
+          
+          def _read_state():
+              try:
+                  with open(STATE_FILE) as f:
+                      return json.load(f).get("signature")
+              except Exception:
+                  return None
+          
+          
+          def _write_state(sig):
+              try:
+                  with open(STATE_FILE, "w") as f:
+                      json.dump({"signature": sig,
+                                 "sent_at": datetime.now(ET).isoformat()}, f)
+              except Exception as e:  # noqa: BLE001
+                  print("State write failed:", type(e).__name__, e)
+          
+          
           def briefing():
               now = datetime.now(ET)
               mins = now.hour * 60 + now.minute
@@ -1590,10 +1654,17 @@ jobs:
               # Daily bars for the weekly/daily trend in the Context section. Best
               # effort: the card still builds without them.
               daily = fetch_daily_for(active["name"])
-              title, body = make_card(active["candles"], active["live"], now, kind,
-                                      active["name"], fallback_note, gap_line(results),
-                                      daily=daily)
-              send_ntfy(title, body)
+              title, body, sig = make_card(active["candles"], active["live"], now, kind,
+                                           active["name"], fallback_note, gap_line(results),
+                                           daily=daily)
+              # NY cards send only when a decision changed (15-min monitor rule).
+              # Sunday/SWING briefings always send; forced runs always send.
+              if kind == "NY" and not FORCE and _read_state() == sig:
+                  print("No change in decisions. Nothing sent.")
+                  return 0
+              sent = send_ntfy(title, body)
+              if sent and kind == "NY" and not FORCE:
+                  _write_state(sig)
               return 0
           
           
@@ -1666,7 +1737,7 @@ jobs:
               check("Tue PDL (Monday session)", by_label2.get("PDL"), 4030.00)
           
               # --- ORB filter boundaries, via the card text ---
-              _, body_ok = make_card(candles, 4064.0, mon, "NY", "test", "", "")
+              _, body_ok, sig_ok = make_card(candles, 4064.0, mon, "NY", "test", "", "")
               if "ORB range 13.7 pts: OK" not in body_ok:
                   print("FAIL ORB filter: 13.7 should be OK")
                   ok = False
@@ -1676,7 +1747,7 @@ jobs:
               idx0800 = next(i for i, c in enumerate(candles)
                              if c["t"] == to_ms(datetime.combine(mon_d, time(8, 0), ET)))
               wide[idx0800] = _row(datetime.combine(mon_d, time(8, 0), ET), 4060, 4080.00, 4060.00, 4070)
-              _, body_wide = make_card(wide, 4070.0, mon, "NY", "test", "", "")
+              _, body_wide, _ = make_card(wide, 4070.0, mon, "NY", "test", "", "")
               if "ORB range 20.0 pts: SKIP" not in body_wide:
                   print("FAIL ORB filter: 20.0 should be SKIP")
                   ok = False
@@ -1703,6 +1774,16 @@ jobs:
                   else:
                       print("PASS scalp card: %r present" % needle)
           
+              # --- Monitor signature: the three decisions, deterministic ---
+              want_sig = ("EXECUTE:LIQZONE SHORT|4063.0|4075.3|3|TRADE;"
+                          "PREPARE:WATCH LON H|4066.4;"
+                          "WATCH:WATCH LON L|4041.1")
+              if sig_ok != want_sig:
+                  print("FAIL signature: got %r, want %r" % (sig_ok, want_sig))
+                  ok = False
+              else:
+                  print("PASS signature: %r" % (sig_ok,))
+          
               # --- Staleness: 90 min old is stale, 10 min old is fresh ---
               now_ms = int(mon.astimezone(timezone.utc).timestamp() * 1000)
               old = [{"t": now_ms - 105 * 60 * 1000, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}]
@@ -1721,13 +1802,21 @@ jobs:
               # --- Price offset shifts every row ---
               saved_offset = PRICE_OFFSET
               PRICE_OFFSET = 2.0
-              _, body_off = make_card(candles, 4064.0, mon, "NY", "test", "", "")
+              _, body_off, sig_off = make_card(candles, 4064.0, mon, "NY", "test", "", "")
               PRICE_OFFSET = saved_offset
               if "4,074.0  ORB H" not in body_off:
                   print("FAIL offset: ORB H should read 4,074.0 with +2.0 offset")
                   ok = False
               else:
                   print("PASS offset: ORB H reads 4,074.0 with +2.0 offset")
+          
+              # Same card twice -> same signature; shifted prices -> different one.
+              _, _, sig_ok2 = make_card(candles, 4064.0, mon, "NY", "test", "", "")
+              if sig_ok2 != sig_ok or sig_off == sig_ok:
+                  print("FAIL signature change: repeat %r, offset %r" % (sig_ok2, sig_off))
+                  ok = False
+              else:
+                  print("PASS signature change: repeat matches, offset differs")
           
               # --- Checklist helpers: swings, structure, unbroken, MACD line ---
               # Crafted 15m series: swing H 4020 (bar 2), swing L 3990 (bar 5),
@@ -1788,7 +1877,7 @@ jobs:
                   else:
                       c += 0.5
                   daily.append(_row(d0 + timedelta(days=k), c, c + 2, c - 2, c))
-              _, body_daily = make_card(candles, 4064.0, mon, "NY", "test", "", "", daily=daily)
+              _, body_daily, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "", daily=daily)
               for needle in ("D ↑", "D H 4,200.0 / L 4,146.0", "D next H above 4,200.0"):
                   if needle not in body_daily:
                       print("FAIL daily context: missing %r" % needle)
@@ -1812,4 +1901,14 @@ jobs:
               sys.exit(main())
           
           PYEOF
+      - name: Save monitor state
+        run: |
+          if [ -n "$(git status --porcelain -- gold-state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add gold-state.json
+            git commit -m "Update gold monitor state"
+            git push
+          fi
+
 
