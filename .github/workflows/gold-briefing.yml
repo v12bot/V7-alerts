@@ -1,4 +1,4 @@
-# 2026-11-09: re-registered schedule - no scheduled runs fired today; no functional change
+# 2026-11-09: winter-time crons only - summer entries removed (scheduler fix)
 # Gold briefing - ONE file. Paste this whole file into your repo at
 # .github/workflows/gold-briefing.yml. The Python lives inside it.
 #
@@ -13,9 +13,9 @@
 # card is re-checked and only re-sent when EXECUTE, PREPARE or WATCH
 # changed (state in gold-state.json).
 #
-# Two cron copies each so it works in summer and winter time. The script
-# only sends inside the right ET window, so the wrong-season copy does
-# nothing (a run landing outside the window exits quietly).
+# Winter-time crons only as of Nov 9, 2026.
+# Summer entries removed to fix the scheduler not firing;
+# restore them when daylight saving returns in March 2027.
 name: Gold briefing
 
 permissions:
@@ -23,17 +23,11 @@ permissions:
 
 on:
   schedule:
-    - cron: "25 12 * * 1-5"   # NY briefing, 8:25 ET in summer time
     - cron: "25 13 * * 1-5"   # NY briefing, 8:25 ET in winter time
-    - cron: "5 22 * * 0"      # Sunday open, 6:05 PM ET in summer time
     - cron: "5 23 * * 0"      # Sunday open, 6:05 PM ET in winter time
-    - cron: "0 16 * * 3"      # Wednesday swing check, 12:00 ET in summer time
     - cron: "0 17 * * 3"      # Wednesday swing check, 12:00 ET in winter time
     # 15-min monitor, weekday NY session 07:30-16:00 ET. The script only
     # sends when EXECUTE, PREPARE or WATCH changed (state in gold-state.json).
-    - cron: "30,45 11 * * 1-5"  # monitor, summer time (07:30/07:45 ET)
-    - cron: "*/15 12-19 * * 1-5"  # monitor, summer time (08:00-15:45 ET)
-    - cron: "0 20 * * 1-5"      # monitor, summer time (16:00 ET)
     - cron: "30,45 12 * * 1-5"  # monitor, winter time (07:30/07:45 ET)
     - cron: "*/15 13-20 * * 1-5"  # monitor, winter time (08:00-15:45 ET)
     - cron: "0 21 * * 1-5"      # monitor, winter time (16:00 ET)
