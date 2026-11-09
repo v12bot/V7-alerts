@@ -5,6 +5,7 @@ TITLE: GOLD SCALPS NY
 NOW 4,064.0 (live) · 24h +0.5% | 4H +0.1% | 1H +0.1% | 15m -0.0%
 Context: W n/a · D n/a · 1H ↑ (mixed) · 4H H 4,090.0 L 4,027.8
 W/D swings: daily bars unavailable
+Vol: normal x1.1
 
 ⚡ EXECUTE — AT ENTRY NOW (sweep above LON H, close back below)
 LIQZONE SHORT 🟢 TRADE · 3/5
@@ -39,37 +40,38 @@ TITLE: GOLD SCALPS NY
 NOW 4,055.7 (live) · 24h -1.4% | 4H -0.6% | 1H -0.3% | 15m -0.0%
 Context: W ↓ · D ↓ · 1H ↓ (LH/LL) · 4H H 4,144.2 L 4,040.7
 W H 4,696.0 / L 3,907.0 · D H 4,090.0 / L 3,897.0 · D next H above 4,090.0
+Vol: normal x1.1
 
 ⚡ EXECUTE
 RETEST SHORT 🟢 TRADE · 4/5
 Entry 4,062.2 · SL 4,072.2 · Risk 10.0
 TPs 4,056.1/4,053.1/4,040.7 (0.6R/0.9R/2.2R) · Invalid 15m close above 4,063.9
 Why: room 2.2R · vol ✗ · VWAP ✓ · MACD ✓ · 1H bias ✓
-🔔 ALERTS — set these 2 in TradingView (trigger prices of the decisions)
+🔔 ALERTS — set these 3 in TradingView (trigger prices of the decisions)
 1. 4,062.2  RETEST SHORT         +7
 2. 4,066.4  VWAP BREAK LONG         +11
+3. 4,041.8  BUY ZONE         -14
 
 🔶 PREPARE
 VWAP BREAK LONG (15m close above VWAP 4,066.4)
 Entry 4,066.4 · SL 4,056.4 · Risk 10.0
 TPs 4,073.1/4,082.1/4,090.0/4,111.5 (0.7R/1.6R/2.4R/4.5R) · Invalid 15m close below 4,064.7
-Why: room 4.5R · vol ✗ · VWAP ✗ · MACD ✗ · 1H bias ✗
+Why: room 4.5R · vol ✗ · VWAP ✗ · MACD ✗ · 1H bias ✗ · COUNTER-TREND (W/D/1H)
 
 👀 WATCH
-BUY ZONE (15m rejection in 3,897.0-4,040.7)
-Entry 3,909.0 · SL 3,894.0 · Risk 15.0
-TPs 4,040.7/4,053.1/4,056.1/4,060.1 (8.8R/9.6R/9.8R/10.1R) · Invalid 15m close below 3,897.0
-Why: room 10.1R 🤑 · vol ✗ · VWAP ✗ · MACD ✗ · 1H bias ✗
+BUY ZONE (15m rejection in 4,040.7-4,041.8)
+Entry 4,041.8 · SL 4,031.8 · Risk 10.0
+TPs 4,053.1/4,056.1/4,060.1/4,064.8 (1.1R/1.4R/1.8R/2.3R) · Invalid 15m close below 4,040.7
+Why: room 2.3R · vol ✗ · VWAP ✗ · MACD ✗ · 1H bias ✗ · COUNTER-TREND (W/D/1H)
 
 Key levels
-4,144.2  4H H   yellow  +88
 4,090.0  D H    orange  +34
 4,082.1  1H H   blue    +26
 4,073.1  15m H1 green   +17
 4,060.1  15m L1 green   +4
 4,055.7  >>> NOW (live) <<<
 4,040.7  4H L   yellow  -15
-3,907.0  W L    purple  -149
-3,897.0  D L    orange  -159
 feed: Binance spot PAXGUSDT (fallback - check offset)
-SIGNATURE: EXECUTE:RETEST SHORT|4062.2|4072.2|4|TRADE;PREPARE:VWAP BREAK LONG;WATCH:BUY ZONE|3909.0
+SIGNATURE: EXECUTE:RETEST SHORT|4062.2|4072.2|4|TRADE;PREPARE:VWAP BREAK LONG;WATCH:BUY ZONE|4041.8
+
+============================================================
