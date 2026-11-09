@@ -78,7 +78,7 @@ jobs:
           python - <<'PYEOF'
           #!/usr/bin/env python3
           """Gold session briefing -> ntfy. NY scalp card, Sunday week-open card, Wednesday swing check.
-
+          
           [Safe fixes ported Nov 8 2026 from the patched review: ntfy JSON publish;
           4H bars aligned to the 17:00 ET forex day; weekly bars +3h; stale-sweep /
           through-stop rejection; AT ENTRY NOW. TP ladder and 2-pt invalidation
@@ -106,30 +106,59 @@ jobs:
           failure notices throttled to 1/hour. The scheduled Wednesday 12:00 swing
           card is gone (those runs now build NY cards; _swing_alert covers swings).
           Nov 8 2026: scorecard mode added (MODE=scorecard sends the two test
-          cards in scorecard.txt via ntfy, one message each; manual runs only).]
-
+          cards in scorecard.txt via ntfy, one message each; manual runs only).
+          Nov 8 2026: zones from the nearest 4H/daily swings within 60 pts
+          (broken or not — a broken high keeps acting as resistance), paired
+          only when within 20 pts (ZONE_PAIR_MAX), so wide zones collapse to
+          the nearer level alone; Key levels list drops levels over 60 pts
+          from price (KEY_LEVEL_REACH — the W/D context line still prints
+          them); setups against the W/D/1H trend lose a point and rank below
+          with-trend setups (COUNTER-TREND); retest/sweep setups die when the
+          live price is already through their invalidation; swing invalidation
+          side now follows the direction (was a stale loop variable).
+          Nov 8 2026: the Sunday card gains the scalp decisions (EXECUTE /
+          PREPARE / WATCH + alerts) on Friday's session levels — no Sunday
+          ORB (thin weekend PAXG noise) and no VWAP BREAK (VWAP anchored 5
+          minutes ago is meaningless); the week-open levels stay on top and
+          the 4H swing section stays. Backtested, not just built (see
+          gold_sunday_card_backtest.py).
+          Nov 8 2026: a volatility read on the card (Vol: SQUEEZE / normal /
+          expanding from the last 4 candles' true range vs 14-bar ATR, plus a
+          spike flag when any of the last 3 candles is >= 2x ATR wide); SQUEEZE
+          flags a weak edge ("smaller size or skip" — backtested: squeeze
+          entries run about half the usual edge), EXPANDING is info only (its
+          entries test the same as NORMAL). Display only — it changes no setup,
+          gate, score or exit.
+          Nov 8 2026: a scalp setup no longer qualifies on room + volume alone —
+          VWAP or MACD must agree with the direction (need_trend; zone and VWAP
+          BREAK setups are exempt, they are his own entry method). LIQZONE entry
+          and invalidation are now chart units (were raw — a 6.97-pt error against
+          the live price at the current offset).]
+          
           One short card before the New York session: prior trading day, Asia and
           London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
           price with the distance from the current price. Plus a Sunday week-open
-          card with the last full session's levels and a 4H swing section, and a
+          card with the last full session's levels, the scalp decisions
+          (EXECUTE / PREPARE / WATCH + alerts, Friday's levels, no Sunday ORB,
+          no VWAP BREAK) and a 4H swing section, and a
           Wednesday midday swing check (4H setups, held days/weeks, stop 30-60 pts,
           same gate as the scalp card: room >= 1R and score >= 3 — no 2:1 minimum).
           At most 1 swing setup per send, so Sunday + Wednesday caps at 2/week.
-
+          
           Modes (MODE env var):
             briefing   (default) build and send the card, inside the time window
             feedcheck            compare every feed's price, so you can set PRICE_OFFSET
             selftest             verify the maths on synthetic candles, send nothing
             NY runs send only when EXECUTE, PREPARE or WATCH changed (state in
             gold-state.json); forced runs always send.
-
+          
           Feeds, tried in order. The first one that works prices the card; the card
           always names the feed, so a fallback never passes silently.
             1. TradeLocker demo - your execution price (only if demo secrets are set)
             2. OANDA practice   - XAU/USD spot, the market reference
             3. Binance XAUUSDT perpetual, 4. Bybit XAUUSDT perpetual,
                5. Binance PAXGUSDT spot - fallbacks only, labelled as such
-
+          
           Secrets: NTFY_TOPIC (required - treat the topic name like a password,
           anyone who knows it can read your alerts), OANDA_API_TOKEN,
           TRADELOCKER_DEMO_EMAIL / PASSWORD / SERVER (optional, demo only, never
@@ -145,18 +174,18 @@ jobs:
           import urllib.request
           from datetime import datetime, time, timedelta, timezone
           from zoneinfo import ZoneInfo
-
+          
           ET = ZoneInfo("America/New_York")
-
+          
           # ============================ SETTINGS ============================
           NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
           NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/")
           NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "").strip()
-
+          
           # Added to every feed price so levels match your chart. Run feedcheck mode,
           # compare with your chart, then set this as a repo variable.
           PRICE_OFFSET = float(os.environ.get("PRICE_OFFSET", "0.0") or 0.0)
-
+          
           # No alert repeats: the card is sent once. Repeating a line did
           # not make the phone beep for 3-5 seconds — the notification sound length
           # is the phone's sound file, not something the script controls. If a
@@ -165,10 +194,10 @@ jobs:
           # ORB filter (range of the first 15m candle after 8:00 ET, in points)
           ORB_MIN_RANGE = 4.0
           ORB_MAX_RANGE = 15.0
-
+          
           # A trading day starts at this hour (ET). Gold reopens at 18:00 ET.
           DAY_START_HOUR_ET = 18
-
+          
           # When a scheduled run may send (minutes after midnight, ET). GitHub can
           # delay scheduled runs, so the windows are wide - but they must stay clear
           # of the wrong-season cron (07:25 / 09:25 ET and 17:05 / 19:05 ET Sunday).
@@ -183,7 +212,7 @@ jobs:
           # Swing stop (backtest): max(4H ATR, 30); skip the trade if 4H ATR > 60.
           SWING_STOP_FLOOR = 30.0
           SWING_STOP_CAP = 60.0
-
+          
           # Price within this many points of an entry = already AT the entry: the card
           # says so and no alert is listed (an alert would fire instantly / never help).
           AT_ENTRY_PTS = 2.0
@@ -194,30 +223,37 @@ jobs:
           # A NO SHORTS / NO LONGS alert is only listed when it is at least this far
           # from its own entry alert (otherwise it just doubles the same level).
           INVAL_MIN_GAP = 5.0
+          # Key levels farther than this from price are left off the card (the
+          # weekly/daily swings still print on the W/D line).
+          KEY_LEVEL_REACH = 60.0
+          # Zone candidates: 4H / daily swings (broken or not) within this many
+          # points of price, and a zone pairs two levels only if they are this close.
+          ZONE_LEVEL_SPAN = 60.0
+          ZONE_PAIR_MAX = 20.0
           # A liquidity-sweep entry older than this many 15m bars is history, not a signal.
           MAX_SIGNAL_AGE_BARS = 8
-
+          
           MIN_CANDLES = 150
           CANDLE_MS = 15 * 60 * 1000
           STALE_MINUTES_NY = 60  # newest complete candle must be this fresh (NY only)
-
+          
           OANDA_API_TOKEN = os.environ.get("OANDA_API_TOKEN", "").strip()
           OANDA_HOST = "https://api-fxpractice.oanda.com"
           TL_EMAIL = os.environ.get("TRADELOCKER_DEMO_EMAIL", "").strip()
           TL_PASSWORD = os.environ.get("TRADELOCKER_DEMO_PASSWORD", "").strip()
           TL_SERVER = os.environ.get("TRADELOCKER_DEMO_SERVER", "").strip()
-
+          
           MODE = os.environ.get("MODE", "briefing").strip().lower() or "briefing"
           FORCE = os.environ.get("FORCE", "0").strip() == "1"
-
-
+          
+          
           # ============================ DATA ============================
           def http_get(url):
               req = urllib.request.Request(url, headers={"User-Agent": "gold-briefing/1.0"})
               with urllib.request.urlopen(req, timeout=20) as resp:
                   return json.loads(resp.read().decode("utf-8"))
-
-
+          
+          
           def _parse_oanda_time(s):
               """OANDA timestamps carry 9-digit fractions; trim to 6 for fromisoformat."""
               if s.endswith("Z"):
@@ -234,8 +270,8 @@ jobs:
                   frac = (frac + "000000")[:6]
                   s = head + "." + frac + off
               return datetime.fromisoformat(s)
-
-
+          
+          
           def fetch_oanda():
               """XAU/USD M15 mid candles from OANDA practice. Returns (candles, live, err)."""
               url = (f"{OANDA_HOST}/v3/instruments/XAU_USD/candles"
@@ -259,8 +295,8 @@ jobs:
                   else:
                       live = float(mid["c"])  # forming candle: nearest thing to live
               return candles, live, None
-
-
+          
+          
           def fetch_binance(url):
               """Binance klines (perp or spot). Returns (candles, live, err)."""
               data = http_get(url)
@@ -277,8 +313,8 @@ jobs:
                   else:
                       live = row["c"]
               return candles, live, None
-
-
+          
+          
           def fetch_bybit(url):
               """Bybit v5 kline (linear perp). Returns (candles, live, err)."""
               data = http_get(url)
@@ -296,8 +332,8 @@ jobs:
                   else:
                       live = row["c"]
               return candles, live, None
-
-
+          
+          
           def _coerce_time(v):
               """TradeLocker time may be epoch seconds/ms or an ISO string."""
               if isinstance(v, (int, float)):
@@ -307,21 +343,21 @@ jobs:
               if isinstance(v, str):
                   return _parse_oanda_time(v).astimezone(ET)
               raise ValueError(f"unrecognised time value: {v!r}")
-
-
+          
+          
           def _pick(row, *names, default=None):
               for n in names:
                   if n in row and row[n] is not None:
                       return row[n]
               return default
-
-
+          
+          
           def fetch_tradelocker():
               """XAUUSD M15 candles from TradeLocker demo. UNVERIFIED against the live
               API: method names come from the official library's README, but the
               resolution string and returned candle shape are unconfirmed."""
               from tradelocker import TLAPI  # lazy: only needed when this feed is on
-
+          
               tl = TLAPI(environment="https://demo.tradelocker.com",
                           username=TL_EMAIL, password=TL_PASSWORD, server=TL_SERVER)
               instrument_id = tl.get_instrument_id_from_symbol_name("XAUUSD")
@@ -331,8 +367,8 @@ jobs:
               candles = _tl_rows_to_candles(hist)
               live = float(tl.get_latest_asking_price(instrument_id))
               return candles, live, None
-
-
+          
+          
           def _run_fetcher(name, fallback, fn):
               try:
                   candles, live, err = fn()
@@ -343,8 +379,8 @@ jobs:
                   candles = None
               return {"name": name, "fallback": fallback,
                       "candles": candles, "live": live, "error": err}
-
-
+          
+          
           def _feed_specs():
               """Ordered (name, fallback, fetch_fn-or-None) for every feed. A None
               fn means the feed is unconfigured (stub result, no HTTP call)."""
@@ -367,13 +403,13 @@ jobs:
                             lambda: fetch_binance(
                                 "https://data-api.binance.vision/api/v3/klines?symbol=PAXGUSDT&interval=15m&limit=500")))
               return specs
-
-
+          
+          
           def _stub_result(name, fallback, error):
               return {"name": name, "fallback": fallback,
                       "candles": None, "live": None, "error": error}
-
-
+          
+          
           def fetch_all_feeds():
               """Fetch every configured feed. Order is the preference order.
               Used by feedcheck, which compares all feeds."""
@@ -387,8 +423,8 @@ jobs:
                   else:
                       feeds.append(_run_fetcher(name, fallback, fn))
               return feeds
-
-
+          
+          
           def fetch_first_fresh(kind, now_ms):
               """Fetch feeds in preference order, stopping at the first fresh one.
               Used by briefing, which only prices from one feed. TradeLocker and
@@ -412,21 +448,21 @@ jobs:
                               kind in ("NY", "SWING") and is_stale(r["candles"], now_ms)):
                           break
               return pick_active(results, kind, now_ms), results
-
-
+          
+          
           def price_of(result):
               if result["live"] is not None:
                   return result["live"]
               if result["candles"]:
                   return result["candles"][-1]["c"]
               return None
-
-
+          
+          
           def is_stale(candles, now_ms):
               last_close_ms = candles[-1]["t"] + CANDLE_MS
               return (now_ms - last_close_ms) > STALE_MINUTES_NY * 60 * 1000
-
-
+          
+          
           def pick_active(results, kind, now_ms):
               """First feed with enough fresh candles. Stale NY feeds are skipped."""
               for r in results:
@@ -439,8 +475,8 @@ jobs:
                       continue
                   return r
               return None
-
-
+          
+          
           def gap_line(results):
               """TradeLocker vs OANDA difference, when both answered."""
               tl = next((r for r in results if r["name"].startswith("TradeLocker")), None)
@@ -451,24 +487,24 @@ jobs:
               if pt is None or po is None:
                   return ""
               return "TradeLocker vs OANDA: %+.2f" % (pt - po)
-
-
+          
+          
           # ============================ LEVELS ============================
           def to_ms(dt):
               return int(dt.astimezone(timezone.utc).timestamp() * 1000)
-
-
+          
+          
           def hi_lo(candles, start, end):
               s, e = to_ms(start), to_ms(end)
               sel = [c for c in candles if s <= c["t"] < e]
               if not sel:
                   return None
               return max(c["h"] for c in sel), min(c["l"] for c in sel)
-
-
+          
+          
           def prior_day_window(now):
               """Previous full trading day, skipping blocks when spot gold is closed.
-
+          
               A block starts at 18:00 ET. Blocks that start on Friday or Saturday are
               closed, so they are skipped (Monday morning shows the Friday session).
               """
@@ -482,8 +518,8 @@ jobs:
                   end = begin
                   begin = begin - timedelta(days=1)
               return begin, end
-
-
+          
+          
           def vwap_anchor(now):
               """Start of the current session VWAP: the most recent 18:00 ET (gold
               reopen). His TradingView Session VWAP restarts at 18:05 ET; on 15m bars
@@ -492,8 +528,8 @@ jobs:
               if now < a:
                   a -= timedelta(days=1)
               return a
-
-
+          
+          
           def session_vwap(candles, start):
               s = to_ms(start)
               num = den = 0.0
@@ -503,19 +539,19 @@ jobs:
                       num += tp * c.get("v", 0)
                       den += c.get("v", 0)
               return num / den if den > 0 else None
-
-
+          
+          
           def build_levels(candles, now, kind):
               """Return (items, orb, partial_london). items are (price, label) before offset."""
               items = []
               orb = None
               partial = False
-
+          
               pd_begin, pd_end = prior_day_window(now)
               r = hi_lo(candles, pd_begin, pd_end)
               if r:
                   items += [(r[0], "PDH"), (r[1], "PDL")]
-
+          
               if kind in ("NY", "SWING"):
                   d03 = now.replace(hour=3, minute=0, second=0, microsecond=0)
                   if now < d03:
@@ -524,22 +560,22 @@ jobs:
                   r = hi_lo(candles, asia_start, d03)
                   if r:
                       items += [(r[0], "ASIA H"), (r[1], "ASIA L")]
-
+          
                   d08 = d03.replace(hour=8)
                   london_end = min(now, d08)
                   partial = now < d08
                   r = hi_lo(candles, d03, london_end)
                   if r:
                       items += [(r[0], "LON H"), (r[1], "LON L")]
-
+          
                   orb_end = d08 + timedelta(minutes=15)
                   if now >= orb_end:
                       orb = hi_lo(candles, d08, orb_end)
                       if orb:
                           items += [(orb[0], "ORB H"), (orb[1], "ORB L")]
               return items, orb, partial
-
-
+          
+          
           def _atr_latest(candles, n=14):
               """Wilder ATR(n) on 15m candles; latest value or None."""
               if len(candles) < n + 1:
@@ -554,8 +590,80 @@ jobs:
               for tr in trs[n:]:
                   a = (a * (n - 1) + tr) / n
               return a
-
-
+          
+          
+          VOL_SQUEEZE = 0.7     # recent range / ATR below this = contraction
+          VOL_EXPAND = 1.5      # above this = expansion
+          VOL_SPIKE_X = 2.0     # one candle this many ATRs wide = spike
+          
+          
+          def vol_state(candles, n=14, recent=4):
+              """Volatility read on 15m candles: (state, ratio, spike).
+              ratio = average true range of the last `recent` candles / ATR(n).
+              state: SQUEEZE (<0.7), NORMAL, EXPANDING (>1.5); None if too little data.
+              spike is True when any of the last 3 candles is >= 2x ATR wide."""
+              atr = _atr_latest(candles, n)
+              if atr is None or atr <= 0 or len(candles) < recent + 1:
+                  return None, None, False
+              trs = []
+              for i in range(len(candles) - recent, len(candles)):
+                  pc = candles[i - 1]["c"]
+                  trs.append(max(candles[i]["h"] - candles[i]["l"],
+                                 abs(candles[i]["h"] - pc),
+                                 abs(candles[i]["l"] - pc)))
+              ratio = (sum(trs) / len(trs)) / atr
+              spike = any((c["h"] - c["l"]) >= VOL_SPIKE_X * atr for c in candles[-3:])
+              if ratio < VOL_SQUEEZE:
+                  state = "SQUEEZE"
+              elif ratio > VOL_EXPAND or spike:
+                  state = "EXPANDING"
+              else:
+                  state = "NORMAL"
+              return state, ratio, spike
+          
+          
+          def vol_line(state, ratio):
+              if state is None:
+                  return None
+              if state == "SQUEEZE":
+                  return "Vol: SQUEEZE x%.1f - weak edge, smaller size or skip" % ratio
+              if state == "EXPANDING":
+                  return "Vol: expanding x%.1f" % ratio
+              return "Vol: normal x%.1f" % ratio
+          
+          
+          def counter_trend(direction, w_macd, d_macd, bias_1h):
+              """True when the weekly MACD, daily MACD and the 1H bias that exist
+              (at least two) all point against the trade."""
+              def sgn(v):
+                  if v is None or v == 0:
+                      return None
+                  return 1 if v > 0 else -1
+              votes = [v for v in (sgn(w_macd), sgn(d_macd), bias_1h) if v is not None]
+              want = 1 if direction == "long" else -1
+              return len(votes) >= 2 and all(v == -want for v in votes)
+          
+          
+          def near_swing(swings, kind, raw_price, above, span=ZONE_LEVEL_SPAN, slack=5.0):
+              """Nearest swing level (broken or not) above / below price within span
+              points. A level price has just passed by up to `slack` pts still counts,
+              so a zone price is inside keeps its edge. Returns the raw price or None.
+              Broken levels count on purpose: a broken 4H/daily high keeps acting as
+              resistance, which is how he marks it."""
+              ps = []
+              for s in swings:
+                  if s["kind"] != kind:
+                      continue
+                  p = s["price"]
+                  if above and raw_price - slack < p <= raw_price + span:
+                      ps.append(p)
+                  elif not above and raw_price - span <= p < raw_price + slack:
+                      ps.append(p)
+              if not ps:
+                  return None
+              return min(ps) if above else max(ps)
+          
+          
           def select_alerts(price, cands):
               """Pick the TradingView alerts from (trigger price, label, setup) in
               priority order: skip a trigger price is already at (<= AT_ENTRY_PTS) or
@@ -585,13 +693,13 @@ jobs:
                                   out[k] = (ip, il, {})
                                   break
               return out
-
-
+          
+          
           def plan_geometry(price, atr, vwap, h4_h, h4_l, d_h, d_l):
               """His way of choosing entries, as pure geometry (all prices already
               offset). Returns a list of plan dicts, each with label, direction,
               entry, risk (None = default max(ATR, 10)), cond, invalid, inval_alert.
-
+          
               SELL ZONE: fade the band between the nearest unbroken 4H high and the
                 nearest unbroken daily high above price. Stop = just above the zone
                 top (+3), entry = zone bottom, but never more than 15 pts from the
@@ -605,9 +713,10 @@ jobs:
               if atr is None or atr <= 0:
                   return out
               reach = 3.0 * atr
-              hs = [p for p in (h4_h, d_h) if p is not None]
+              hs = sorted(p for p in (h4_h, d_h) if p is not None)
               if hs:
-                  lo, hi = min(hs), max(hs)
+                  lo = hs[0]
+                  hi = hs[-1] if hs[-1] - lo <= ZONE_PAIR_MAX else lo
                   if hi > price and (lo - price) <= reach:
                       stop0 = hi + 3.0
                       entry = max(lo, stop0 - 15.0)
@@ -620,9 +729,10 @@ jobs:
                                    "15m rejection at %s" % format(hi, ",.1f")),
                           "invalid": (hi, "above"), "zone": (lo, hi),
                           "inval_alert": (stop0, "NO SHORTS")})
-              ls = [p for p in (h4_l, d_l) if p is not None]
+              ls = sorted((p for p in (h4_l, d_l) if p is not None), reverse=True)
               if ls:
-                  lo, hi = min(ls), max(ls)
+                  hi = ls[0]
+                  lo = ls[-1] if hi - ls[-1] <= ZONE_PAIR_MAX else hi
                   if lo < price and (price - hi) <= reach:
                       stop0 = lo - 3.0
                       entry = min(hi, stop0 + 15.0)
@@ -651,8 +761,8 @@ jobs:
                           "invalid": (vwap - 0.25 * atr, "below"),
                           "inval_alert": None})
               return out
-
-
+          
+          
           def _clamp_stop_dist(dist, floor, cap):
               """Clamp a stop distance to [floor, cap]. Returns None to skip the
               trade when the distance is over the cap (too wild, do not squeeze)."""
@@ -661,8 +771,8 @@ jobs:
               if dist > cap:
                   return None
               return max(dist, floor)
-
-
+          
+          
           def _setup_block(s, header):
               """One setup as a compact block: header, entry/SL, TPs+invalid, why.
               TPs are slash-separated in order (TP1 first), so the TP1/TP2 labels
@@ -684,8 +794,8 @@ jobs:
               out.append(tp_line)
               out.append("Why: %s" % s["why"])
               return out
-
-
+          
+          
           def _swing_lines(candles, now, price, kind):
               """The swing section lines (📅 header + ranked swing setup block),
               or [] when alerts are off or no 4H level is being retested. Shared
@@ -700,8 +810,8 @@ jobs:
                   out.extend(_setup_block(
                       s, "%d. %s %s · %d/5" % (i, s["label"], verdict, s["score"])))
               return out
-
-
+          
+          
           def get_swing_setups(candles, now, raw_price, kind):
               """4H swing retest setups — live version of the validated backtest
               scan_swing (breakout + retest on 4H, stop = max(4H ATR, 30) capped
@@ -848,7 +958,9 @@ jobs:
                       why.append("1H bias ✓")
                   else:
                       why.append("1H bias ✗")
-                  inv = (lv - 0.25 * atr4 + PRICE_OFFSET, "below") if is_high else \
+                  # (Nov 8 fix: this used is_high left over from the first loop, so the
+                  # invalidation side could be wrong. The direction decides it.)
+                  inv = (lv - 0.25 * atr4 + PRICE_OFFSET, "below") if direction == "long" else \
                         (lv + 0.25 * atr4 + PRICE_OFFSET, "above")
                   s = {"label": "SWING " + ("LONG" if direction == "long" else "SHORT"),
                        "direction": direction, "entry": entry, "stop": stop,
@@ -860,8 +972,8 @@ jobs:
                   if best is None or (room, score) > (best["room"], best["score"]):
                       best = s
               return [best] if best is not None else []
-
-
+          
+          
           def _macd_hist_latest(candles):
               """MACD(12,26,9) histogram on closes; latest value or None.
               Reuses _macd_line_series for the MACD line instead of recomputing
@@ -875,15 +987,15 @@ jobs:
                   return None
               sig = _ema_series(mvals, 9)
               return mvals[-1] - sig[-1] if sig[-1] is not None else None
-
-
+          
+          
           def _pct_move(candles, bars_back):
               if len(candles) <= bars_back:
                   return None
               old = candles[-1 - bars_back]["c"]
               return 100.0 * (candles[-1]["c"] - old) / old
-
-
+          
+          
           # ============================ HIGHER TIMEFRAMES (checklist) ============================
           def _ema_series(vals, n):
               """EMA aligned to vals (None until the first n values seed it)."""
@@ -894,8 +1006,8 @@ jobs:
                   for i in range(n, len(vals)):
                       out[i] = vals[i] * k + out[i - 1] * (1 - k)
               return out
-
-
+          
+          
           def _macd_line_series(candles, fast=12, slow=26):
               """MACD line (fast EMA minus slow EMA) aligned to candles. This is the
               'MACD above or below zero' read the checklist uses for trend and bias."""
@@ -904,8 +1016,8 @@ jobs:
               es = _ema_series(closes, slow)
               return [(a - b if a is not None and b is not None else None)
                       for a, b in zip(ef, es)]
-
-
+          
+          
           def _resample(candles, minutes):
               """Group bars into N-minute bars. 4H bars are aligned to the 17:00 ET
               forex day (01/05/09/13/17/21 ET) so swings match a TradingView OANDA
@@ -932,8 +1044,8 @@ jobs:
                       cur["c"] = c["c"]
                       cur["v"] += c.get("v", 0)
               return out
-
-
+          
+          
           def _weekly_bars(daily):
               """Group daily bars into ISO calendar weeks (Mon-Sun)."""
               out = []
@@ -955,8 +1067,8 @@ jobs:
                       cur["c"] = c["c"]
                       cur["v"] += c.get("v", 0)
               return out
-
-
+          
+          
           def _swing_points(candles, k=2, bar_ms=15 * 60 * 1000):
               """Swing highs/lows: bar j is a swing high if its high is the max of
               highs[j-k..j+k] and strictly above both neighbours (same for lows).
@@ -976,8 +1088,8 @@ jobs:
                       out.append({"t": candles[j]["t"], "conf_ms": candles[j + k]["t"] + bar_ms,
                                   "price": lj, "kind": "L"})
               return out
-
-
+          
+          
           def _last_swings(candles, k=2, bar_ms=15 * 60 * 1000, as_of_ms=None):
               """The last two confirmed swing highs and lows (prices, newest first).
               as_of_ms limits to swings confirmed at or before that time."""
@@ -987,8 +1099,8 @@ jobs:
               highs = [s["price"] for s in sw if s["kind"] == "H"][-2:]
               lows = [s["price"] for s in sw if s["kind"] == "L"][-2:]
               return highs[::-1], lows[::-1]
-
-
+          
+          
           def _structure(candles, k=2, bar_ms=15 * 60 * 1000, as_of_ms=None, swings=None):
               """Structure from the last two confirmed swing highs/lows: +1 for
               HH/HL (bullish), -1 for LH/LL (bearish), None when mixed or unknown.
@@ -1003,8 +1115,8 @@ jobs:
               if highs[0] < highs[1] and lows[0] < lows[1]:
                   return -1
               return None
-
-
+          
+          
           def _unbroken(candles, swings):
               """The swings price has never closed beyond since they formed: a swing
               high is broken by a later close above it, a swing low by a later close
@@ -1025,8 +1137,8 @@ jobs:
                   if not broken:
                       (out_h if s["kind"] == "H" else out_l).append(s)
               return out_h, out_l
-
-
+          
+          
           def _sane_daily(candles):
               """Drop daily bars with impossible wicks (bad prints). A real gold
               day never has a high 3% above both its open and close, or a low 3%
@@ -1040,8 +1152,8 @@ jobs:
                       continue
                   out.append(c)
               return out or None
-
-
+          
+          
           def fetch_daily_for(name):
               """Daily bars for the active feed (context: weekly/daily trend). Best
               effort: returns a list of daily bars or None. TradeLocker daily is
@@ -1092,8 +1204,8 @@ jobs:
               except Exception:
                   return None
               return None
-
-
+          
+          
           def _tl_rows_to_candles(hist):
               """TradeLocker price-history rows (any shape the library returns) into
               our candle dicts, sorted by time."""
@@ -1120,13 +1232,14 @@ jobs:
                   })
               candles.sort(key=lambda c: c["t"])
               return candles
-
-
+          
+          
           def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=None):
               last_close = candles[-1]["c"]
               price = (live if live is not None else last_close) + PRICE_OFFSET
               items, orb, partial = build_levels(candles, now, kind)
               rows = [(p + PRICE_OFFSET, label) for (p, label) in items]
+              vwap = None
               if kind == "NY":
                   vwap = session_vwap(candles, vwap_anchor(now))
                   if vwap is not None:
@@ -1134,26 +1247,20 @@ jobs:
                       rows.append((vwap, "VWAP"))
               rows.append((price, "NOW"))
               rows.sort(key=lambda x: -x[0])
-
+              _sun_rows = list(rows)
               if kind == "SUNDAY":
-                  # Week-open card keeps the plain levels layout.
-                  lines = []
-                  for p, label in rows:
-                      if label == "NOW":
-                          tag = " (live)" if live is not None else " (close)"
-                          lines.append("%s  >>> NOW%s <<<" % (format(p, ",.1f"), tag))
-                      else:
-                          lines.append("%s  %-6s %+.0f" % (format(p, ",.1f"), label, p - price))
-                  # Swing section (4H setups, held days/weeks): at most 1 per send,
-                  # so Sunday + Wednesday caps at 2/week. Skipped when alerts are
-                  # off or no 4H level is being retested near price.
-                  lines.extend(_swing_lines(candles, now, price, kind))
-                  lines.append("Levels are from the last full session.")
-                  lines.append("feed: %s%s" % (feed_name, fallback_note))
-                  if gap:
-                      lines.append(gap)
-                  return "GOLD WEEK OPEN", "\n".join(lines), "SUNDAY"
-
+                  # Sunday scalps use Friday's session levels (ASIA/LON from the
+                  # weekend PAXG range). The Sunday ORB is thin-market noise, so
+                  # its levels are dropped: no ORB setups (orb is already None
+                  # for SUNDAY) and no ORB retests. VWAP stays None (it anchored
+                  # 5 minutes ago): no VWAP BREAK setups, no VWAP score point.
+                  items = [x for x in build_levels(candles, now, "NY")[0]
+                           if x[1] not in ("ORB H", "ORB L")]
+          
+              # SUNDAY runs the NY scalp flow below (EXECUTE / PREPARE / WATCH +
+              # alerts). The week-open levels stay on top and the swing section
+              # is appended before the feed line; see the end of the NY flow.
+          
               if kind == "SWING":
                   # Midweek swing check: 4H setups only (held days/weeks). Same
                   # layout as the scalp setups, with the swing stop (30-60 pts)
@@ -1177,7 +1284,7 @@ jobs:
                   if gap:
                       lines.append(gap)
                   return "GOLD SWINGS — MIDWEEK", "\n".join(lines), "SWING"
-
+          
               # ---- NY scalp card: ranked setups, then the levels list ----
               # Simple layout with a bit of pop: the best trade up top, one compact
               # block per setup, the checklist context in two short lines.
@@ -1196,7 +1303,7 @@ jobs:
               orb_range = (orb[0] - orb[1]) if orb else None
               orb_ok = (orb_range is not None
                         and ORB_MIN_RANGE <= orb_range <= ORB_MAX_RANGE)
-
+          
               # ---- Checklist context: 1H bias, 4H swings, weekly/daily trend ----
               now_ms = to_ms(now)
               h1 = _resample(candles, 60)
@@ -1220,6 +1327,7 @@ jobs:
               d_h = d_l = w_h = w_l = None
               d_above = None
               d_below = None
+              d_sw = []
               daily = _sane_daily(daily) if daily else None
               if daily:
                   d_line = _macd_line_series(daily)
@@ -1245,7 +1353,7 @@ jobs:
                       w_h = w_uh[-1]["price"] + PRICE_OFFSET
                   if w_ul:
                       w_l = w_ul[-1]["price"] + PRICE_OFFSET
-
+          
               # ---- Swing levels (checklist 15m + 4H layers) ----
               # (label, price, direction, conf_ms). Only the last two 15m swings and
               # the last 4H swing of each kind, near price (within 3xATR), and only
@@ -1274,12 +1382,10 @@ jobs:
               for nm, p, _d, _cm in swing_defs:
                   levels[nm] = p + PRICE_OFFSET
                   raw_levels[nm] = p
-                  rows.append((p + PRICE_OFFSET, nm))
-              rows.sort(key=lambda x: -x[0])
-
+          
               def build_setup(label, direction, entry, cond, ok=True, check_ran=True,
                               invalid=None, risk_override=None, age_bars=None,
-                              extra_levels=None):
+                              extra_levels=None, live_check=False, need_trend=True):
                   """A scalp setup: entry, 1xATR stop, TPs at the successive levels
                   ahead, a 0-5 score and a TRADE / NO TRADE verdict.
                   Stop rule (clamp): stop = max(ATR, 10) pts, but if the 15m ATR is
@@ -1338,6 +1444,11 @@ jobs:
                               (direction == "short" and macd_hist < 0)))
                   if macd_ok:
                       score += 1
+                  # Against the weekly, daily and 1H trend: lose a point and carry
+                  # a COUNTER-TREND tag (it also ranks below with-trend setups).
+                  against = counter_trend(direction, w_macd, d_macd, bias_1h)
+                  if against:
+                      score = max(0, score - 1)
                   reasons = []
                   if atr > 15.0:
                       reasons.append("15m ATR %.1f > 15 max — too wild, skip" % atr)
@@ -1349,6 +1460,11 @@ jobs:
                       reasons.append("room %.1fR < 1R" % room)
                   if score < 3:
                       reasons.append("score %d < 3" % score)
+                  # Room + volume alone must not qualify a trade: VWAP or MACD has
+                  # to agree with the direction (his zone setups are exempt - they
+                  # are his own entry method, see plan_geometry).
+                  if need_trend and not (vwap_with or macd_ok):
+                      reasons.append("neither VWAP nor MACD agrees")
                   ran = ((price - entry) / risk if direction == "long"
                          else (entry - price) / risk)
                   if check_ran and ran > 0.5:
@@ -1358,6 +1474,14 @@ jobs:
                       reasons.append("price already through the stop")
                   if age_bars is not None and age_bars > MAX_SIGNAL_AGE_BARS:
                       reasons.append("signal %d min old" % (age_bars * 15))
+                  # Setups judged on closed 15m candles can go stale inside a bar:
+                  # a retest / sweep whose invalidation live price is already through
+                  # is dead (not applied to pending breakouts, whose price is
+                  # naturally on the far side of the level).
+                  if live_check and invalid is not None:
+                      _ip, _side = invalid
+                      if (_side == "below" and price < _ip) or (_side == "above" and price > _ip):
+                          reasons.append("live price already through invalidation")
                   why = ["room %.1fR%s" % (room, " 🤑" if room >= 5.0 else ""),
                          "vol ✓" if vol_ok else "vol ✗",
                          "VWAP ✓" if vwap_with else "VWAP ✗",
@@ -1369,11 +1493,14 @@ jobs:
                       why.append("1H bias ✓")
                   else:
                       why.append("1H bias ✗")
+                  if against:
+                      why.append("COUNTER-TREND (W/D/1H)")
                   return {"label": label, "direction": direction, "entry": entry,
                           "stop": stop, "risk": risk, "tps": tps, "room": room,
                           "score": score, "trade": not reasons, "reasons": reasons,
-                          "why": " · ".join(why), "cond": cond, "invalid": invalid}
-
+                          "why": " · ".join(why), "cond": cond, "invalid": invalid,
+                          "counter": against}
+          
               setups = []
               if orb:
                   s = build_setup("ORB LONG", "long", levels["ORB H"],
@@ -1421,9 +1548,9 @@ jobs:
                   if abs(raw_price - lv) > 1.5 * atr:
                       continue
                   # Invalidated if price closed through the level by more than 0.25 ATR.
-                  if is_high and candles[-1]["c"] < lv - 0.25 * atr:
+                  if is_high and min(candles[-1]["c"], raw_price) < lv - 0.25 * atr:
                       continue
-                  if not is_high and candles[-1]["c"] > lv + 0.25 * atr:
+                  if not is_high and max(candles[-1]["c"], raw_price) > lv + 0.25 * atr:
                       continue
                   cands.append((abs(raw_price - lv), label))
               cands.sort()
@@ -1432,11 +1559,11 @@ jobs:
                   if cand_dir[label] == "long":
                       s = build_setup("RETEST LONG", "long", lv, "pullback to %s" % label,
                                       check_ran=False,
-                                      invalid=(lv - 0.25 * atr, "below"))
+                                      invalid=(lv - 0.25 * atr, "below"), live_check=True)
                   else:
                       s = build_setup("RETEST SHORT", "short", lv, "rally to %s" % label,
                                       check_ran=False,
-                                      invalid=(lv + 0.25 * atr, "above"))
+                                      invalid=(lv + 0.25 * atr, "above"), live_check=True)
                   if s:
                       setups.append(s)
               # Liquidity zones: a session level (PDH/PDL, ASIA H/L, LON H/L) with a
@@ -1479,17 +1606,19 @@ jobs:
                           entry = c["c"]
                           direction = "short" if is_high else "long"
                           stop_dist = abs(extreme - entry) + 0.25 * atr
+                          entry += PRICE_OFFSET   # chart units, like price and levels
                           if stop_dist > 15.0:
                               break
                           risk_ov = max(stop_dist, 10.0)
                           cond = ("sweep above %s, close back below" % label
                                   if is_high else
                                   "sweep below %s, close back above" % label)
-                          inv = (lv, "above") if is_high else (lv, "below")
+                          inv = ((lv + PRICE_OFFSET, "above") if is_high
+                                 else (lv + PRICE_OFFSET, "below"))
                           s = build_setup("LIQZONE SHORT" if is_high else "LIQZONE LONG",
                                           direction, entry, cond,
                                           invalid=inv, risk_override=risk_ov,
-                                          age_bars=len(candles) - 1 - i)
+                                          age_bars=len(candles) - 1 - i, live_check=True)
                           if s:
                               setups.append(s)
                           break
@@ -1504,10 +1633,17 @@ jobs:
                   (h1_h[0] + PRICE_OFFSET) if h1_h else None,
                   (h1_l[0] + PRICE_OFFSET) if h1_l else None) if x is not None]
               plan_setups = []
-              for g in plan_geometry(price, atr, vwap, _h4_h, _h4_l, d_above, d_below):
+              _zone_h4_h = near_swing(h4_sw, "H", raw_price, True)
+              _zone_h4_l = near_swing(h4_sw, "L", raw_price, False)
+              _zone_d_h = near_swing(d_sw, "H", raw_price, True)
+              _zone_d_l = near_swing(d_sw, "L", raw_price, False)
+              _zo = lambda v: None if v is None else v + PRICE_OFFSET  # noqa: E731
+              for g in plan_geometry(price, atr, vwap, _zo(_zone_h4_h), _zo(_zone_h4_l),
+                                     _zo(_zone_d_h), _zo(_zone_d_l)):
                   s = build_setup(g["label"], g["direction"], g["entry"], g["cond"],
                                   check_ran=False, invalid=g["invalid"],
-                                  risk_override=g["risk"], extra_levels=_extras)
+                                  risk_override=g["risk"], extra_levels=_extras,
+                                  need_trend=False)
                   if s:
                       s["inval"] = g["inval_alert"]
                       plan_setups.append(s)
@@ -1519,8 +1655,9 @@ jobs:
                                  and _z[0] - AT_ENTRY_PTS <= price <= _z[1] + AT_ENTRY_PTS))
                       if _at:
                           setups.append(s)
-              setups.sort(key=lambda s: (not s["trade"], -s["score"], -s["room"]))
-
+              setups.sort(key=lambda s: (not s["trade"], s.get("counter", False),
+                                         -s["score"], -s["room"]))
+          
               # 3-pt minimum gap between setup entries (his rule): entries within
               # 3 pts are the same zone, so keep only the best-ranked one per zone.
               # TOP first (live setups), then WATCH is deduped against TOP + WATCH.
@@ -1532,7 +1669,7 @@ jobs:
                       _deduped.append(s)
                       _kept_entries.append(s["entry"])
               setups = _deduped
-
+          
               # WATCH: levels not broken yet, with the full plan for when they break.
               # Nearest four to price, within 3xATR. The ORB levels are already TOP
               # breakout setups, so they are not listed here.
@@ -1576,11 +1713,11 @@ jobs:
                   if all(abs(s["entry"] - e) >= _GAP for e in _seen_e):
                       watch_setups.append(s)
                       _seen_e.append(s["entry"])
-
+          
               def _lab_of(s):
                   return (s["label"][len("WATCH "):]
                           if s["label"].startswith("WATCH ") else s["label"])
-
+          
               lines = []
               lines.append("NOW %s%s · %s" % (format(price, ",.1f"),
                                               " (live)" if live is not None else " (close)",
@@ -1619,6 +1756,10 @@ jobs:
                       ctx2.append("D next H above %s" % format(d_above, ",.1f"))
                   if ctx2:
                       lines.append(" · ".join(ctx2))
+              _vs, _vr, _vspike = vol_state(candles)
+              _vl = vol_line(_vs, _vr)
+              if _vl:
+                  lines.append(_vl)
               lines.append("")
               # Colour for a markup level, per the Gold Daily Checklist colour key:
               # weekly purple, daily orange, 4H yellow, 1H blue, 15m green. The card
@@ -1638,7 +1779,7 @@ jobs:
                   if label.startswith(("ASIA", "LON")):
                       return "green"
                   return ""
-
+          
               # Markup levels (the chart markup for the day, per the Gold Daily
               # Checklist line budget): weekly 1, daily 2, 4H 2, 1H 2, 15m up to 4.
               # (ORB H/L are NOT listed here: they are the 08:00 15m candle's
@@ -1690,6 +1831,7 @@ jobs:
                   _seen.add(_k)
                   _dedup.append((_p, _lab))
               markup = _dedup
+              markup = [m for m in markup if abs(m[0] - price) <= KEY_LEVEL_REACH]
               # Line budget: about 10 objects. Always keep the weekly and daily
               # lines (the context), then fill the rest with the nearest 4H/1H/15m
               # levels until 10 total.
@@ -1789,6 +1931,11 @@ jobs:
                   else:
                       lines.append("%s  %-6s %-7s %+.0f" % (
                           format(p, ",.1f"), label, _level_colour(label), p - price))
+              if kind == "SUNDAY":
+                  # Swing section (4H setups, held days/weeks): at most 1 per send,
+                  # so Sunday + Wednesday caps at 2/week. Skipped when alerts are
+                  # off or no 4H level is being retested near price.
+                  lines.extend(_swing_lines(candles, now, price, kind))
               lines.append("feed: %s%s" % (feed_name, fallback_note))
               if gap:
                   lines.append(gap)
@@ -1819,9 +1966,23 @@ jobs:
               else:
                   _sig_w = "WATCH:none"
               sig = ";".join((_sig_e, _sig_p, _sig_w))
+              if kind == "SUNDAY":
+                  # Week-open levels on top (the plain levels layout from the old
+                  # Sunday card), then the scalp decisions.
+                  _top = []
+                  for p, label in _sun_rows:
+                      if label == "NOW":
+                          tag = " (live)" if live is not None else " (close)"
+                          _top.append("%s  >>> NOW%s <<<" % (format(p, ",.1f"), tag))
+                      else:
+                          _top.append("%s  %-6s %+.0f" % (format(p, ",.1f"), label, p - price))
+                  _top.append("Levels are from the last full session.")
+                  _top.append("")
+                  lines = _top + lines
+                  return "GOLD WEEK OPEN", "\n".join(lines), sig
               return "GOLD SCALPS NY", "\n".join(lines), sig
-
-
+          
+          
           # ============================ NTFY ============================
           def _ntfy_request(title, body, priority=3, tags="chart_with_upwards_trend"):
               """JSON publish. HTTP headers are latin-1 only, so a Title header holding
@@ -1839,8 +2000,8 @@ jobs:
               if NTFY_TOKEN:
                   req.add_header("Authorization", "Bearer " + NTFY_TOKEN)
               return req
-
-
+          
+          
           def send_ntfy(title, body, priority=3, tags="chart_with_upwards_trend"):
               print("----- %s -----" % title)
               print(body)
@@ -1858,8 +2019,8 @@ jobs:
                       if attempt == 0:
                           _time.sleep(2)
               return False
-
-
+          
+          
           # ============================ MODES ============================
           def feedcheck():
               results = fetch_all_feeds()
@@ -1884,14 +2045,14 @@ jobs:
               lines.append("then set PRICE_OFFSET = chart price minus feed price.")
               send_ntfy("GOLD FEED CHECK", "\n".join(lines), priority=3, tags="mag")
               return 0 if ok else 1
-
-
+          
+          
           # Monitor state: the last sent NY decision signature, kept in the repo
           # as gold-state.json so scheduled runs can tell a changed card from a
           # repeat. Missing or unreadable state means "send" (safe fallback).
           STATE_FILE = "gold-state.json"
-
-
+          
+          
           def _load_state():
               """The monitor state dict (NY signature/date, swing signature/date,
               last failure notice). {} when the file is missing or unreadable."""
@@ -1901,8 +2062,8 @@ jobs:
                   return d if isinstance(d, dict) else {}
               except Exception:
                   return {}
-
-
+          
+          
           def _save_state(**kv):
               """Merge keys into the state file (NY signature, swing signature, last
               failure notice share one file)."""
@@ -1914,8 +2075,8 @@ jobs:
                       json.dump(d, f)
               except Exception as e:  # noqa: BLE001
                   print("State write failed:", type(e).__name__, e)
-
-
+          
+          
           def market_open(now):
               """Spot gold hours (ET): Sun 18:00 to Fri 17:00, with a daily break
               17:00-18:00 Mon-Thu."""
@@ -1927,8 +2088,8 @@ jobs:
               if wd == 4:
                   return mins < 17 * 60
               return not (17 * 60 <= mins < 18 * 60)
-
-
+          
+          
           def _swing_alert(candles, live, now):
               """All-day swing check: sends a GOLD SWING card only when a 4H swing
               setup passes the gate (TRADE) and differs from the last one sent
@@ -1952,8 +2113,8 @@ jobs:
               lines.append("Held over news: red-folder news within 15 min → take profit or tighten the stop.")
               if send_ntfy("GOLD SWING", "\n".join(lines)):
                   _save_state(swing_sig=sig, swing_date=today)
-
-
+          
+          
           def briefing():
               now = datetime.now(ET)
               mins = now.hour * 60 + now.minute
@@ -1970,7 +2131,7 @@ jobs:
               else:
                   print("Gold market closed. Nothing sent.")
                   return 0
-
+          
               now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
               active, results = fetch_first_fresh(kind, now_ms)
               if active is None:
@@ -1992,7 +2153,7 @@ jobs:
                             priority=4, tags="warning")
                   _save_state(fail_at=now.isoformat())
                   return 1
-
+          
               fallback_note = " (fallback - check offset)" if active["fallback"] else ""
               # Daily bars for the weekly/daily trend in the Context section. Best
               # effort: the card still builds without them.
@@ -2015,27 +2176,28 @@ jobs:
                   return 0
               send_ntfy(title, body)
               return 0
-
-
+          
+          
           # ============================ SELF-TEST ============================
           def _row(dt_et, o, h, l, c, v=100):
               return {"t": int(dt_et.astimezone(timezone.utc).timestamp() * 1000),
                       "o": o, "h": h, "l": l, "c": c, "v": v}
-
-
+          
+          
           def selftest():
               """Synthetic candles with known answers; verifies the maths. Sends nothing."""
               global PRICE_OFFSET
+              PRICE_OFFSET = 0.0  # the checks below are written in raw prices
               ok = True
               VWAP_WANT = 4064.45
-
+          
               def check(name, got, want):
                   nonlocal ok
                   good = got is not None and abs(got - want) < 0.01
                   print(("PASS " if good else "FAIL ") + "%s: got %s, want %s" % (name, got, want))
                   if not good:
                       ok = False
-
+          
               # --- Monday 2026-11-09 08:25 ET: prior day must be the Friday session ---
               mon = datetime(2026, 11, 9, 8, 25, tzinfo=ET)
               thu = datetime(2026, 11, 5).date()
@@ -2084,7 +2246,7 @@ jobs:
                   print(("PASS " if got == want else "FAIL ") + "%s: %s" % (nm, got))
                   if got != want:
                       ok = False
-
+          
               # --- Tuesday 2026-11-10 08:25 ET: prior day is the Monday session ---
               tue = datetime(2026, 11, 10, 8, 25, tzinfo=ET)
               candles2 = candles + [
@@ -2095,7 +2257,7 @@ jobs:
               by_label2 = {label: p for (p, label) in items2}
               check("Tue PDH (Monday session)", by_label2.get("PDH"), 4080.00)
               check("Tue PDL (Monday session)", by_label2.get("PDL"), 4030.00)
-
+          
               # --- ORB range line is gone; the filter still gates the setups ---
               # The ORB range no longer prints anywhere on the card, and when the
               # top setup is an ORB setup that did not qualify, EXECUTE says only
@@ -2117,7 +2279,7 @@ jobs:
                   ok = False
               else:
                   print("PASS ORB range SKIP: wide ORB neither qualifies nor is named")
-
+          
               # --- Scalp card: three priority decisions with entry / SL / TPs / exit ---
               # The synthetic Monday has a LON H liquidity-zone sweep (08:00 high
               # 4072.00 penetrates the zone, 08:15 closes back below 4066.40), so the
@@ -2139,7 +2301,12 @@ jobs:
                       ok = False
                   else:
                       print("PASS scalp card: %r present" % needle)
-
+          
+              gcheck_card = ("Vol: " in body_ok)
+              print(("PASS " if gcheck_card else "FAIL ") + "card shows the Vol line")
+              if not gcheck_card:
+                  ok = False
+          
               # --- Monitor signature: the three decisions, deterministic ---
               want_sig = ("EXECUTE:LIQZONE SHORT|4063.0|4075.3|3|TRADE;"
                           "PREPARE:SELL ZONE|4090.0;"
@@ -2149,7 +2316,7 @@ jobs:
                   ok = False
               else:
                   print("PASS signature: %r" % (sig_ok,))
-
+          
               # --- Staleness: 90 min old is stale, 10 min old is fresh ---
               now_ms = int(mon.astimezone(timezone.utc).timestamp() * 1000)
               old = [{"t": now_ms - 105 * 60 * 1000, "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}]
@@ -2164,7 +2331,7 @@ jobs:
                   ok = False
               else:
                   print("PASS staleness: 10 min old is fresh")
-
+          
               # --- Price offset shifts every row ---
               saved_offset = PRICE_OFFSET
               PRICE_OFFSET = 2.0
@@ -2175,7 +2342,7 @@ jobs:
                   ok = False
               else:
                   print("PASS offset: SELL ZONE entry reads 4,092.0 with +2.0 offset")
-
+          
               # Same card twice -> same signature; shifted prices -> different one.
               _, _, sig_ok2 = make_card(candles, 4064.0, mon, "NY", "test", "", "")
               if sig_ok2 != sig_ok or sig_off == sig_ok:
@@ -2183,7 +2350,7 @@ jobs:
                   ok = False
               else:
                   print("PASS signature change: repeat matches, offset differs")
-
+          
               # --- price 4 pts away from the entry: the entry IS listed as an alert ---
               _, body_far, _ = make_card(candles, 4059.0, mon, "NY", "test", "", "")
               if "1. 4,063.0  LIQZONE SHORT" not in body_far or "AT ENTRY NOW" in body_far:
@@ -2191,7 +2358,7 @@ jobs:
                   ok = False
               else:
                   print("PASS alert when away: entry listed as alert 1")
-
+          
               # --- AT ENTRY: no alert for the entry price itself ---
               _, body_at, _ = make_card(candles, 4063.0, mon, "NY", "test", "", "")
               if "AT ENTRY NOW" not in body_at or "1. 4,063.0" in body_at:
@@ -2199,7 +2366,7 @@ jobs:
                   ok = False
               else:
                   print("PASS at-entry: AT ENTRY NOW shown, entry not listed as an alert")
-
+          
               # --- 4H bars follow the 17:00 ET forex day ---
               base = datetime(2026, 11, 9, 0, 0, tzinfo=ET)
               q = [_row(base + timedelta(minutes=15 * k), 1, 2, 0, 1) for k in range(48)]
@@ -2210,7 +2377,7 @@ jobs:
                   ok = False
               else:
                   print("PASS 4H alignment: bars open 21/01/05/09 ET")
-
+          
               # --- weekly bars: Sunday-evening OANDA stamp belongs to the new week ---
               day0 = datetime(2026, 11, 1, 22, 0, tzinfo=timezone.utc)  # Sun 17:00 ET
               sess = []
@@ -2224,7 +2391,7 @@ jobs:
                   ok = False
               else:
                   print("PASS weekly: Sun-open sessions grouped with their own week")
-
+          
               # --- ntfy request survives an em dash in the title ---
               _saved_topic = globals()["NTFY_TOPIC"]
               globals()["NTFY_TOPIC"] = "selftest"
@@ -2242,7 +2409,7 @@ jobs:
                   ok = False
               else:
                   print("PASS ntfy: em dash title travels in JSON, headers are latin-1 safe")
-
+          
               # --- stale liquidity sweep / price through the stop are rejected ---
               late = candles + [_row(datetime.combine(mon_d, time(8, 30), ET) + timedelta(minutes=15 * k),
                                      4063, 4064, 4062, 4063) for k in range(12)]
@@ -2253,7 +2420,7 @@ jobs:
                   ok = False
               else:
                   print("PASS stale sweep: old liquidity sweep is not an EXECUTE")
-
+          
               # --- Checklist helpers: swings, structure, unbroken, MACD line ---
               # Crafted 15m series: swing H 4020 (bar 2), swing L 3990 (bar 5),
               # swing H 4030 (bar 8), swing L 4000 (bar 12). The 4020 high is broken
@@ -2298,7 +2465,7 @@ jobs:
                   ok = False
               else:
                   print("PASS MACD line: positive on a steady uptrend (%.2f)" % ml[-1])
-
+          
               # --- Daily context: 200 daily bars, peak high 4200 (unbroken), trough
               # low 4146. Daily MACD ends positive; nearest unbroken H above the
               # live 15m price (4064) is the 4200 peak.
@@ -2328,7 +2495,7 @@ jobs:
                   ok = False
               else:
                   print("PASS daily filter: bad print 9,740 ignored")
-
+          
               # --- Plan geometry with his real Nov 8 gold numbers: price 4,070.59,
               # 4H high 4,076.944, daily high 4,090, VWAP 4,060.8, 15m ATR 6. ---
               def gcheck(name, cond):
@@ -2354,7 +2521,7 @@ jobs:
               gcheck("buy zone mirrors (entry 4022, stop 4007, 15 pts max)",
                      bz is not None and abs(bz["entry"] - 4022.0) < 0.01
                      and abs(bz["entry"] - bz["risk"] - 4007.0) < 0.01)
-
+          
               # --- Price 19 pts below the entry, zones 26+ pts away: nothing in reach ---
               _, body_none, _ = make_card(candles, 4045.0, mon, "NY", "test", "", "")
               gcheck("card: no alert within 15 pts says so",
@@ -2362,7 +2529,69 @@ jobs:
               _, body_near, _ = make_card(candles, 4080.0, mon, "NY", "test", "", "")
               gcheck("card: sell zone alert listed at +10, NO SHORTS dropped (3 pts apart)",
                      "1. 4,090.0  SELL ZONE" in body_near and "NO SHORTS" not in body_near)
-
+          
+              # --- Offset units: LIQZONE entry/invalidation are chart-adjusted ---
+              # Feed 4 pts above the chart (offset -4): raw live 4,070 = chart 4,066,
+              # past the adjusted invalidation 4,062.4. Before the fix the raw
+              # invalidation (4,066.4) was compared with the adjusted price and the
+              # dead sweep still showed as a TRADE.
+              globals()["PRICE_OFFSET"] = -4.0
+              _, body_offu, _ = make_card(candles, 4070.0, mon, "NY", "test", "", "")
+              globals()["PRICE_OFFSET"] = 0.0
+              if "LIQZONE SHORT 🟢 TRADE" in body_offu:
+                  print("FAIL offset units: dead LIQZONE still EXECUTE with a -4 offset")
+                  ok = False
+              else:
+                  print("PASS offset units: dead LIQZONE rejected with a -4 offset")
+          
+              # --- Swing setup: the invalidation side must match the direction ---
+              import random as _rnd
+              _checked = 0
+              _bad = 0
+              for _seed in range(150):
+                  _r = _rnd.Random(_seed)
+                  _now = datetime(2026, 11, 10, 11, 0, tzinfo=ET)
+                  _p = 4060.0
+                  _cs = []
+                  for _k in range(700):
+                      _p += _r.gauss(0, 5)
+                      _cs.append(_row(_now - timedelta(minutes=15 * (700 - _k)),
+                                      _p, _p + 4, _p - 4, _p + _r.gauss(0, 2),
+                                      _r.randint(50, 500)))
+                  for _s in get_swing_setups(_cs, _now, _cs[-1]["c"], "SWING"):
+                      _checked += 1
+                      _want = "below" if _s["direction"] == "long" else "above"
+                      if _s["invalid"][1] != _want:
+                          _bad += 1
+              gcheck("swing invalidation side matches direction (%d setups checked)" % _checked,
+                     _checked > 0 and _bad == 0)
+          
+              # --- Counter-trend, swing neighbours, zone pairing ---
+              gcheck("counter-trend: long against W down, D down, 1H down",
+                     counter_trend("long", -1.0, -2.0, -1))
+              gcheck("counter-trend: short with the trend is fine",
+                     not counter_trend("short", -1.0, -2.0, -1))
+              gcheck("counter-trend: mixed votes are not counter-trend",
+                     not counter_trend("long", 1.0, -2.0, -1))
+              gcheck("counter-trend: fewer than two votes is not counter-trend",
+                     not counter_trend("long", None, None, -1))
+              sw = [{"kind": "H", "price": 4076.9}, {"kind": "H", "price": 4153.9},
+                    {"kind": "H", "price": 4090.0}, {"kind": "L", "price": 4036.8},
+                    {"kind": "L", "price": 3877.3}, {"kind": "H", "price": 4075.0}]
+              gcheck("near swing: nearest high above (broken or not) within 60",
+                     near_swing(sw, "H", 4070.0, True) == 4075.0)
+              gcheck("near swing: a high 85 pts away is out of range",
+                     near_swing([{"kind": "H", "price": 4153.9}], "H", 4069.0, True) is None)
+              gcheck("near swing: a level just passed (3 pts) still counts",
+                     near_swing([{"kind": "H", "price": 4077.0}], "H", 4080.0, True) == 4077.0)
+              gcheck("near swing: nearest low below",
+                     near_swing(sw, "L", 4070.0, False) == 4036.8)
+              wide = {p["label"]: p for p in plan_geometry(
+                  4070.0, 6.0, None, 4076.0, None, 4110.0, None)}.get("SELL ZONE")
+              gcheck("zone pairing: levels more than 20 pts apart use only the nearer one",
+                     wide is not None and abs(wide["entry"] - 4076.0) < 0.01
+                     and wide["zone"] == (4076.0, 4076.0))
+          
               # --- Alert selection: 15-pt reach, invalidation spacing ---
               sz = {"inval": (4093.0, "NO SHORTS")}
               al = select_alerts(4070.59, [(4078.0, "SELL ZONE", sz),
@@ -2379,11 +2608,57 @@ jobs:
               al = select_alerts(4070.0, [(4078.0, "A", sz), (4060.0, "B", {}), (4083.0, "C", {})])
               gcheck("alerts: full list - invalidation replaces the lowest priority",
                      [l for _, l, _ in al] == ["A", "B", "NO SHORTS"])
-
+          
+              # --- Volatility state: calm, squeeze, spike ---
+              def _vc(rngs):
+                  out, px = [], 4000.0
+                  for r in rngs:
+                      out.append({"t": 0, "o": px, "h": px + r / 2, "l": px - r / 2,
+                                  "c": px, "v": 100})
+                  return out
+              _calm = [6.0] * 30
+              st, rt, sp = vol_state(_vc(_calm))
+              gcheck("vol: steady 6-pt candles = NORMAL (%s x%.2f)" % (st, rt or 0), st == "NORMAL")
+              st, rt, sp = vol_state(_vc(_calm + [2.0] * 4))
+              gcheck("vol: 4 tiny candles = SQUEEZE (%s x%.2f)" % (st, rt or 0), st == "SQUEEZE")
+              st, rt, sp = vol_state(_vc(_calm + [20.0]))
+              gcheck("vol: one 20-pt candle = EXPANDING + spike (%s)" % st, st == "EXPANDING" and sp)
+              st, rt, sp = vol_state(_vc(_calm + [11.0] * 4))
+              gcheck("vol: 4 wide candles = EXPANDING (%s x%.2f)" % (st, rt or 0), st == "EXPANDING")
+              gcheck("vol: too little data = None", vol_state(_vc([6.0] * 3))[0] is None)
+              gcheck("vol line text: squeeze flagged weak, expanding is info only",
+                     "weak edge" in (vol_line("SQUEEZE", 0.5) or "")
+                     and "chase" not in (vol_line("EXPANDING", 1.8) or ""))
+          
+              # --- Sunday scalps: same NY decisions, Friday levels, no ORB/VWAP ---
+              # Price sits just above Friday's high (4090.00, the Thu 18:00 bar
+              # that opens Friday's block), so the PDH retest is the top setup.
+              _sun_c = pre + [
+                  _row(datetime.combine(thu, time(18, 0), ET), 4050, 4090.00, 4045, 4060),
+                  _row(datetime.combine(fri, time(10, 0), ET), 4060, 4062, 4027.83, 4035),
+                  _row(datetime.combine(sun, time(18, 0), ET), 4090, 4094.00, 4088.00, 4092),
+              ]
+              _sun = datetime(2026, 11, 8, 18, 5, tzinfo=ET)
+              _t, _b, _s = make_card(_sun_c, 4092.0, _sun, "SUNDAY", "test", "", "")
+              gcheck("Sunday card keeps the GOLD WEEK OPEN title",
+                     _t == "GOLD WEEK OPEN")
+              gcheck("Sunday card has the scalp decisions section",
+                     "⚡ EXECUTE" in _b)
+              gcheck("Sunday card has no ORB setups",
+                     "ORB LONG" not in _b and "ORB SHORT" not in _b)
+              gcheck("Sunday card has no VWAP BREAK setups",
+                     "VWAP BREAK" not in _b)
+              gcheck("Sunday card keeps the week-open levels line",
+                     "Levels are from the last full session." in _b)
+              gcheck("Sunday card shows the Friday-level retest",
+                     "RETEST" in _b)
+              gcheck("Sunday card signature carries the decisions",
+                     _s.startswith("EXECUTE:"))
+          
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
-
-
+          
+          
           def scorecard():
               """MODE=scorecard: send the two test cards in scorecard.txt
               (repo root) to ntfy, one message each. Manual runs only — the
@@ -2401,19 +2676,19 @@ jobs:
               if idx < 0:
                   print("scorecard.txt has no TEST CARD 2 section.")
                   return 1
-
+          
               def _clean(part):
                   return "\n".join(
                       ln for ln in part.splitlines()
                       if ln.strip().strip("=") != "").strip()
-
+          
               card1 = _clean(text[:idx])
               card2 = _clean(text[idx:])
               ok1 = send_ntfy("GOLD SCORECARD 1/2", card1)
               ok2 = send_ntfy("GOLD SCORECARD 2/2", card2)
               return 0 if (ok1 and ok2) else 1
-
-
+          
+          
           def main():
               if MODE == "feedcheck":
                   return feedcheck()
@@ -2422,12 +2697,12 @@ jobs:
               if MODE == "scorecard":
                   return scorecard()
               return briefing()
-
-
+          
+          
           if __name__ == "__main__":
               sys.exit(main())
-
-
+          
+          
           PYEOF
       - name: Save monitor state
         run: |
