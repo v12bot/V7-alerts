@@ -1,1 +1,1 @@
-{"signature": "EXECUTE:none:ORB SHORT|price already through the stop;PREPARE:VWAP BREAK LONG;WATCH:SELL ZONE|4161.1", "date": "2026-11-09", "sent_at": "2026-11-09T18:55:18.881696-05:00"}
+{"signature": "EXECUTE:none:ORB SHORT|price already through the stop;PREPARE:SELL ZONE|4140.0;WATCH:BUY ZONE|4117.8", "date": "2026-11-09", "sent_at": "2026-11-09T20:03:34.468065-05:00"}
