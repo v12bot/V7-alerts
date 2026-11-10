@@ -1,4 +1,4 @@
-# 2026-11-09: winter-time crons only - summer entries removed (scheduler fix)
+# 2026-11-09: winter-time crons only - summer entries removed (scheduler fix). Staggered +7 min off the quarter-hour per GitHub's guidance — schedule is best-effort under load
 # Gold briefing - ONE file. Paste this whole file into your repo at
 # .github/workflows/gold-briefing.yml. The Python lives inside it.
 #
@@ -25,12 +25,12 @@ on:
   schedule:
     - cron: "25 13 * * 1-5"   # NY briefing, 8:25 ET in winter time
     - cron: "5 23 * * 0"      # Sunday open, 6:05 PM ET in winter time
-    - cron: "0 17 * * 3"      # Wednesday swing check, 12:00 ET in winter time
+    - cron: "7 17 * * 3"      # Wednesday swing check, 12:07 ET in winter time
     # 15-min monitor, weekday NY session 07:30-16:00 ET. The script only
     # sends when EXECUTE, PREPARE or WATCH changed (state in gold-state.json).
-    - cron: "30,45 12 * * 1-5"  # monitor, winter time (07:30/07:45 ET)
-    - cron: "*/15 13-20 * * 1-5"  # monitor, winter time (08:00-15:45 ET)
-    - cron: "0 21 * * 1-5"      # monitor, winter time (16:00 ET)
+    - cron: "37,52 12 * * 1-5"  # monitor, winter time (07:37/07:52 ET)
+    - cron: "7,22,37,52 13-20 * * 1-5"  # monitor, winter time (08:07-15:52 ET)
+    - cron: "7 21 * * 1-5"      # monitor, winter time (16:07 ET)
   workflow_dispatch:
     inputs:
       mode:
