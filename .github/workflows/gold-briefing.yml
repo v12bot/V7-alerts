@@ -127,7 +127,15 @@ jobs:
           VWAP or MACD must agree with the direction (need_trend; zone and VWAP
           BREAK setups are exempt, they are his own entry method). LIQZONE entry
           and invalidation are now chart units (were raw — a 6.97-pt error against
-          the live price at the current offset).]
+          the live price at the current offset).
+          Nov 9 2026: price alignment. Every NY / Sunday card now prints WHEN its price
+          was sampled, the raw feed price and the offset added ("priced 21:54:07 ET ·
+          raw 4,111.63 · offset +6.97"), so a card can be compared with the TradeLocker
+          chart like for like (a 15-minute-old card looks like an offset error in a fast
+          market). The offset is per feed: TradeLocker 0 (the feed IS the chart), OANDA =
+          PRICE_OFFSET, fallbacks = PRICE_OFFSET_FALLBACK when set (else PRICE_OFFSET,
+          flagged on the card). feedcheck prints the OANDA bid / mid / ask and the sample
+          second. No setup, gate, score or exit changed.]
           
           One short card before the New York session: prior trading day, Asia and
           London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
@@ -179,6 +187,14 @@ jobs:
           # Added to every feed price so levels match your chart. Run feedcheck mode,
           # compare with your chart, then set this as a repo variable.
           PRICE_OFFSET = float(os.environ.get("PRICE_OFFSET", "0.0") or 0.0)
+          # PRICE_OFFSET is calibrated for ONE feed (OANDA). briefing() rewrites the
+          # PRICE_OFFSET global each run with _offset_for(), so BASE_OFFSET keeps the
+          # configured value. Fallback feeds sit at other distances from the chart
+          # (PAXG ran ~13 pts under OANDA on Nov 9 2026), so they get their own
+          # optional PRICE_OFFSET_FALLBACK; unset = reuse PRICE_OFFSET and flag it.
+          BASE_OFFSET = PRICE_OFFSET
+          _fb_raw = os.environ.get("PRICE_OFFSET_FALLBACK", "").strip()
+          PRICE_OFFSET_FALLBACK = float(_fb_raw) if _fb_raw else None
           
           # No alert repeats: the card is sent once. Repeating a line did
           # not make the phone beep for 3-5 seconds — the notification sound length
@@ -267,9 +283,12 @@ jobs:
           
           
           def fetch_oanda():
-              """XAU/USD M15 mid candles from OANDA practice. Returns (candles, live, err)."""
+              """XAU/USD M15 mid candles from OANDA practice. Returns (candles, live, err).
+              price=MBA also returns bid and ask; the forming candle's bid/ask close is
+              kept in fetch_oanda.quote for feedcheck (candles themselves stay mid)."""
+              fetch_oanda.quote = None
               url = (f"{OANDA_HOST}/v3/instruments/XAU_USD/candles"
-                     "?granularity=M15&count=500&price=M")
+                     "?granularity=M15&count=500&price=MBA")
               req = urllib.request.Request(url, headers={
                   "Authorization": f"Bearer {OANDA_API_TOKEN}",
                   "Accept": "application/json",
@@ -288,6 +307,10 @@ jobs:
                       })
                   else:
                       live = float(mid["c"])  # forming candle: nearest thing to live
+                      try:
+                          fetch_oanda.quote = (float(c["bid"]["c"]), float(c["ask"]["c"]))
+                      except (KeyError, TypeError, ValueError):
+                          fetch_oanda.quote = None
               return candles, live, None
           
           
@@ -372,7 +395,9 @@ jobs:
                   err = "only %d candles" % len(candles)
                   candles = None
               return {"name": name, "fallback": fallback,
-                      "candles": candles, "live": live, "error": err}
+                      "candles": candles, "live": live, "error": err,
+                      "fetched_at": datetime.now(ET),
+                      "quote": getattr(fn, "quote", None)}
           
           
           def _feed_specs():
@@ -450,6 +475,19 @@ jobs:
               if result["candles"]:
                   return result["candles"][-1]["c"]
               return None
+          
+          
+          def _offset_for(feed):
+              """Chart-minus-feed offset for the feed that prices the card.
+              TradeLocker IS the chart, so 0 (leaving PRICE_OFFSET on top of it would
+              double-count). OANDA uses PRICE_OFFSET. Fallback feeds use
+              PRICE_OFFSET_FALLBACK when it is set, else PRICE_OFFSET (flagged on the
+              card, because that number was not calibrated for them)."""
+              if feed["name"].startswith("TradeLocker"):
+                  return 0.0
+              if feed["fallback"] and PRICE_OFFSET_FALLBACK is not None:
+                  return PRICE_OFFSET_FALLBACK
+              return BASE_OFFSET
           
           
           def is_stale(candles, now_ms):
@@ -1228,7 +1266,21 @@ jobs:
               return candles
           
           
-          def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=None):
+          def _feed_line(feed_name, fallback_note, priced_at, raw_price):
+              """The card's last lines: which feed, WHEN it was sampled, the raw feed
+              price and the offset added to it. With the sample time on the card, a
+              comparison with the TradeLocker chart is like for like; without it a
+              15-minute-old price looks like an offset error."""
+              out = "feed: %s%s" % (feed_name, fallback_note)
+              if priced_at is not None:
+                  out += "\npriced %s ET · raw %s · offset %+.2f" % (
+                      priced_at.astimezone(ET).strftime("%H:%M:%S"),
+                      format(raw_price, ",.2f"), PRICE_OFFSET)
+              return out
+          
+          
+          def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=None,
+                        priced_at=None):
               last_close = candles[-1]["c"]
               price = (live if live is not None else last_close) + PRICE_OFFSET
               items, orb, partial = build_levels(candles, now, kind)
@@ -1930,7 +1982,8 @@ jobs:
                   # so Sunday + Wednesday caps at 2/week. Skipped when alerts are
                   # off or no 4H level is being retested near price.
                   lines.extend(_swing_lines(candles, now, price, kind))
-              lines.append("feed: %s%s" % (feed_name, fallback_note))
+              lines.append(_feed_line(feed_name, fallback_note, priced_at,
+                                      price - PRICE_OFFSET))
               if gap:
                   lines.append(gap)
               # Decision signature for the 15-min monitor: only the three
@@ -2024,7 +2077,14 @@ jobs:
               for r in results:
                   p = price_of(r)
                   if r["candles"] is not None and p is not None:
-                      lines.append("%s: %s (%d candles)" % (r["name"], format(p, ",.2f"), len(r["candles"])))
+                      _at = r.get("fetched_at")
+                      lines.append("%s: %s (%d candles) @%s ET" % (
+                          r["name"], format(p, ",.2f"), len(r["candles"]),
+                          _at.strftime("%H:%M:%S") if _at else "?"))
+                      _q = r.get("quote")
+                      if _q:
+                          lines.append("   bid %s / ask %s (spread %.2f)" % (
+                              format(_q[0], ",.2f"), format(_q[1], ",.2f"), _q[1] - _q[0]))
                       ok.append(r)
                       if r["name"].startswith("OANDA"):
                           ref = p
@@ -2035,8 +2095,11 @@ jobs:
                       if r["name"].startswith("OANDA"):
                           continue
                       lines.append("%s vs OANDA: %+.2f" % (r["name"], price_of(r) - ref))
-              lines.append("Compare with your chart's last closed 15m candle,")
-              lines.append("then set PRICE_OFFSET = chart price minus feed price.")
+              lines.append("At the sample time above, read TradeLocker's SELL and BUY")
+              lines.append("(screenshot with the clock). Gap = TL sell - OANDA bid,")
+              lines.append("and TL buy - OANDA ask. Calm minutes only; 10+ readings")
+              lines.append("across sessions; set PRICE_OFFSET to the median gap.")
+              lines.append("PRICE_OFFSET now: %+.2f" % BASE_OFFSET)
               send_ntfy("GOLD FEED CHECK", "\n".join(lines), priority=3, tags="mag")
               return 0 if ok else 1
           
@@ -2110,6 +2173,7 @@ jobs:
           
           
           def briefing():
+              global PRICE_OFFSET
               now = datetime.now(ET)
               mins = now.hour * 60 + now.minute
               kind = None
@@ -2148,13 +2212,21 @@ jobs:
                   _save_state(fail_at=now.isoformat())
                   return 1
           
-              fallback_note = " (fallback - check offset)" if active["fallback"] else ""
+              # The offset belongs to the feed that prices the card (see _offset_for).
+              PRICE_OFFSET = _offset_for(active)
+              if not active["fallback"]:
+                  fallback_note = ""
+              elif PRICE_OFFSET_FALLBACK is not None:
+                  fallback_note = " (fallback)"
+              else:
+                  fallback_note = (" (fallback - offset %+.2f is calibrated for OANDA, "
+                                   "not this feed)" % PRICE_OFFSET)
               # Daily bars for the weekly/daily trend in the Context section. Best
               # effort: the card still builds without them.
               daily = fetch_daily_for(active["name"])
               title, body, sig = make_card(active["candles"], active["live"], now, kind,
                                            active["name"], fallback_note, gap_line(results),
-                                           daily=daily)
+                                           daily=daily, priced_at=active.get("fetched_at"))
               # NY cards send only when a decision changed (15-min monitor rule).
               # Sunday/SWING briefings always send; forced runs always send.
               # The state carries the date: yesterday's identical "nothing to trade"
@@ -2648,6 +2720,31 @@ jobs:
                      "RETEST" in _b)
               gcheck("Sunday card signature carries the decisions",
                      _s.startswith("EXECUTE:"))
+          
+              # --- Per-feed offset and the sample-time line (Nov 9 2026) ---
+              _sb, _sf = BASE_OFFSET, PRICE_OFFSET_FALLBACK
+              globals()["BASE_OFFSET"] = 6.97
+              globals()["PRICE_OFFSET_FALLBACK"] = None
+              _f_tl = {"name": "TradeLocker demo", "fallback": False}
+              _f_oa = {"name": "OANDA XAU/USD", "fallback": False}
+              _f_px = {"name": "Binance spot PAXGUSDT", "fallback": True}
+              gcheck("offset: TradeLocker feed needs none", _offset_for(_f_tl) == 0.0)
+              gcheck("offset: OANDA uses PRICE_OFFSET", _offset_for(_f_oa) == 6.97)
+              gcheck("offset: fallback reuses PRICE_OFFSET when no fallback offset is set",
+                     _offset_for(_f_px) == 6.97)
+              globals()["PRICE_OFFSET_FALLBACK"] = -5.5
+              gcheck("offset: fallback uses PRICE_OFFSET_FALLBACK when set",
+                     _offset_for(_f_px) == -5.5)
+              globals()["BASE_OFFSET"], globals()["PRICE_OFFSET_FALLBACK"] = _sb, _sf
+              globals()["PRICE_OFFSET"] = 2.0
+              _, body_pa, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "",
+                                        priced_at=datetime(2026, 11, 9, 8, 25, 7, tzinfo=ET))
+              globals()["PRICE_OFFSET"] = 0.0
+              gcheck("feed line shows sample time, raw price and offset",
+                     "priced 08:25:07 ET · raw 4,064.00 · offset +2.00" in body_pa)
+              _, body_np, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "")
+              gcheck("feed line without a sample time is the old one-liner",
+                     "feed: test" in body_np and "priced " not in body_np)
           
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
