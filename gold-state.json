@@ -1,1 +1,1 @@
-{"signature": "EXECUTE:none:ORB SHORT|score 2 < 3;PREPARE:SELL ZONE|4074.0;WATCH:BUY ZONE|4061.0", "date": "2026-11-10", "sent_at": "2026-11-10T08:24:33.866678-05:00", "swing_sig": "SWING:SWING LONG|4072.0|4042.0|3", "swing_date": "2026-11-10"}
+{"signature": "EXECUTE:none:ORB SHORT|already ran 2.0R past entry;PREPARE:SELL ZONE|4062.3;WATCH:WATCH PDL|4057.4", "date": "2026-11-10", "sent_at": "2026-11-10T08:39:30.218335-05:00", "swing_sig": "SWING:SWING LONG|4072.0|4042.0|3", "swing_date": "2026-11-10"}
