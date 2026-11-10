@@ -1,1 +1,1 @@
-{"signature": "EXECUTE:none:ORB SHORT|already ran 5.7R past entry;PREPARE:WATCH 15m L1|4016.6;WATCH:level:4036.0|15m L2", "date": "2026-11-10", "sent_at": "2026-11-10T12:39:27.884305-05:00", "swing_sig": "SWING:SWING LONG|4072.0|4042.0|3", "swing_date": "2026-11-10"}
+{"signature": "EXECUTE:RETEST SHORT|4036.0|4046.0|3|TRADE;PREPARE:SELL ZONE|4049.6;WATCH:WATCH 15m L1|4016.6", "date": "2026-11-10", "sent_at": "2026-11-10T12:54:30.042164-05:00", "swing_sig": "SWING:SWING LONG|4072.0|4042.0|3", "swing_date": "2026-11-10"}
