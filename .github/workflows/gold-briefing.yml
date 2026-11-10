@@ -1,4 +1,4 @@
-# 2026-11-09: winter-time crons only - summer entries removed (scheduler fix). Staggered +7 min off the quarter-hour per GitHub's guidance — schedule is best-effort under load
+# 2026-11-09: winter-time crons only - summer entries removed (scheduler fix). Staggered +7 min off the quarter-hour per GitHub's guidance — schedule is best-effort under load Wed swing slot removed - no separate swing day; swings run with the scalp monitor.
 # Gold briefing - ONE file. Paste this whole file into your repo at
 # .github/workflows/gold-briefing.yml. The Python lives inside it.
 #
@@ -9,7 +9,7 @@
 # section, and a Wednesday midday swing check (4H setups, held days/weeks).
 # At most 1 swing setup per send, so Sunday + Wednesday caps at 2/week.
 # Set the SWING_ALERTS repo variable to 0 to switch the swing section off.
-# Plus a 15-minute monitor on weekday NY sessions (07:30-16:00 ET): the
+# Plus a 15-minute monitor on weekday NY sessions (07:37-16:07 ET): the
 # card is re-checked and only re-sent when EXECUTE, PREPARE or WATCH
 # changed (state in gold-state.json).
 #
@@ -25,8 +25,7 @@ on:
   schedule:
     - cron: "25 13 * * 1-5"   # NY briefing, 8:25 ET in winter time
     - cron: "5 23 * * 0"      # Sunday open, 6:05 PM ET in winter time
-    - cron: "7 17 * * 3"      # Wednesday swing check, 12:07 ET in winter time
-    # 15-min monitor, weekday NY session 07:30-16:00 ET. The script only
+    # 15-min monitor, weekday NY session 07:37-16:07 ET. The script only
     # sends when EXECUTE, PREPARE or WATCH changed (state in gold-state.json).
     - cron: "37,52 12 * * 1-5"  # monitor, winter time (07:37/07:52 ET)
     - cron: "7,22,37,52 13-20 * * 1-5"  # monitor, winter time (08:07-15:52 ET)
