@@ -66,6 +66,7 @@ jobs:
           TRADELOCKER_DEMO_SERVER: ${{ secrets.TRADELOCKER_DEMO_SERVER }}
           PRICE_OFFSET: ${{ vars.PRICE_OFFSET }}
           ROOM_BASIS: ${{ vars.ROOM_BASIS }}
+          ROOM_BASIS: ${{ vars.ROOM_BASIS }}
           SWING_ALERTS: ${{ vars.SWING_ALERTS }}
           MODE: ${{ github.event.inputs.mode || 'briefing' }}
           FORCE: ${{ github.event.inputs.force || '0' }}
@@ -2633,8 +2634,9 @@ jobs:
           
           def selftest():
               """Synthetic candles with known answers; verifies the maths. Sends nothing."""
-              global PRICE_OFFSET
+              global PRICE_OFFSET, ROOM_BASIS
               PRICE_OFFSET = 0.0  # the checks below are written in raw prices
+              ROOM_BASIS = "last"  # the checks below are written for the last-target room rule
               ok = True
               VWAP_WANT = 4064.45
           
