@@ -91,6 +91,8 @@ jobs:
           - TPs: the successive levels ahead (>= 3 pts apart, within MAX_TP_R of entry),
             up to 4; the SELL / BUY ZONE entries count as levels, so a TP never sits
             inside an opposing zone.
+          - ORB setups are built only until ORB_LAST_HOUR_ET (12:00 ET); the ORB H / L
+            levels stay on as TP levels (Nov 11 2026).
           - Setups that wait for a 15m close (ORB, zones, VWAP BREAK, retests) say WAIT
             FOR CLOSE and carry a max-chase limit. LIQZONE entries are already triggered.
           - Alerts: at most 3, only within 15 pts of price, none for an entry price is
@@ -164,6 +166,10 @@ jobs:
           # ORB filter (range of the first 15m candle after 8:00 ET, in points)
           ORB_MIN_RANGE = 4.0
           ORB_MAX_RANGE = 15.0
+          # ORB LONG / SHORT setups are only built until this hour (ET) of the same
+          # morning (Nov 11 2026). Before, the 08:00 candle's breakout stayed a live
+          # setup until 03:00 the next night.
+          ORB_LAST_HOUR_ET = 12
           
           # A trading day starts at this hour (ET). Gold reopens at 18:00 ET.
           DAY_START_HOUR_ET = 18
@@ -228,6 +234,7 @@ jobs:
           NEWS_BEFORE_MIN = 30
           NEWS_AFTER_MIN = 15
           NEWS_CACHE_MIN = 180
+          NEWS_RETRY_MIN = 30   # wait this long after a failed fetch before retrying
           
           MIN_CANDLES = 150
           CANDLE_MS = 15 * 60 * 1000
@@ -355,14 +362,25 @@ jobs:
               return default
           
           
+          _TL_API = None
+          
+          
+          def _tl_api():
+              """One TradeLocker login per run, shared by the candle and daily fetches
+              (before, each fetch logged in again)."""
+              global _TL_API
+              if _TL_API is None:
+                  from tradelocker import TLAPI  # lazy: only needed when this feed is on
+                  _TL_API = TLAPI(environment="https://demo.tradelocker.com",
+                                  username=TL_EMAIL, password=TL_PASSWORD, server=TL_SERVER)
+              return _TL_API
+          
+          
           def fetch_tradelocker():
               """XAUUSD M15 candles from TradeLocker demo. UNVERIFIED against the live
               API: method names come from the official library's README, but the
               resolution string and returned candle shape are unconfirmed."""
-              from tradelocker import TLAPI  # lazy: only needed when this feed is on
-          
-              tl = TLAPI(environment="https://demo.tradelocker.com",
-                          username=TL_EMAIL, password=TL_PASSWORD, server=TL_SERVER)
+              tl = _tl_api()
               instrument_id = tl.get_instrument_id_from_symbol_name("XAUUSD")
               hist = tl.get_price_history(instrument_id, resolution="15m",
                                           start_timestamp=0, end_timestamp=0,
@@ -547,16 +565,28 @@ jobs:
                   cached = cache_age = None
               if cached is not None and cache_age < timedelta(minutes=NEWS_CACHE_MIN):
                   return cached, None
+              # After a failed fetch wait NEWS_RETRY_MIN before trying again: the free
+              # calendar rate-limits, and retrying every run keeps it blocked.
+              try:
+                  recent_fail = (now - datetime.fromisoformat(st["news_fail_at"])
+                                 < timedelta(minutes=NEWS_RETRY_MIN))
+              except Exception:  # noqa: BLE001
+                  recent_fail = False
+              if recent_fail:
+                  if cached is not None:
+                      return cached, None
+                  return [], "news calendar unavailable"
               try:
                   data = http_get(NEWS_URL)
                   if not isinstance(data, list) or not data:
                       raise ValueError("unexpected calendar shape")
                   ev = parse_news(data)
                   _save_state(news=[[t.isoformat(), n] for t, n in ev],
-                              news_at=now.isoformat())
+                              news_at=now.isoformat(), news_fail_at=None)
                   return ev, None
               except Exception as e:  # noqa: BLE001
                   print("News fetch failed:", type(e).__name__, e)
+                  _save_state(news_fail_at=now.isoformat())
                   if cached is not None:
                       return cached, None
                   return [], "news calendar unavailable"
@@ -670,7 +700,26 @@ jobs:
                       orb = hi_lo(candles, d08, orb_end)
                       if orb:
                           items += [(orb[0], "ORB H"), (orb[1], "ORB L")]
+                          # Past ORB_LAST_HOUR_ET the levels stay (TP candidates) but
+                          # no ORB setup is built from them.
+                          if now >= d08.replace(hour=ORB_LAST_HOUR_ET):
+                              orb = None
               return items, orb, partial
+          
+          
+          def _formed_times(now):
+              """When each session level was complete (ms), for the same session
+              build_levels uses: after midnight ET the ASIA / LON levels are still
+              yesterday's, and PDH / PDL are complete when the prior-day window ends.
+              (Before, today's date was used, so between 00:00 and 03:00 ET the levels
+              looked like they formed in the future and no retest or sweep could fire.)"""
+              d03 = now.replace(hour=3, minute=0, second=0, microsecond=0)
+              if now < d03:
+                  d03 -= timedelta(days=1)
+              pd_end = to_ms(prior_day_window(now)[1])
+              asia, lon = to_ms(d03), to_ms(d03.replace(hour=8))
+              return {"PDH": pd_end, "PDL": pd_end, "ASIA H": asia, "ASIA L": asia,
+                      "LON H": lon, "LON L": lon}
           
           
           def _atr_latest(candles, n=14):
@@ -1312,9 +1361,7 @@ jobs:
                           "https://data-api.binance.vision/api/v3/klines?symbol=PAXGUSDT&interval=1d&limit=300")
                       return candles
                   if name.startswith("TradeLocker"):
-                      from tradelocker import TLAPI
-                      tl = TLAPI(environment="https://demo.tradelocker.com",
-                                  username=TL_EMAIL, password=TL_PASSWORD, server=TL_SERVER)
+                      tl = _tl_api()
                       instrument_id = tl.get_instrument_id_from_symbol_name("XAUUSD")
                       hist = tl.get_price_history(instrument_id, resolution="1d",
                                                   start_timestamp=0, end_timestamp=0,
@@ -1677,12 +1724,7 @@ jobs:
               # A level counts as broken only by a close beyond it AFTER its window
               # closed (PDH/PDL 00:00, ASIA 03:00, LON 08:00, swing levels at their
               # confirmation time) - a close before the level existed does not count.
-              day = now.date()
-              formed_ms = {}
-              for label, t in (("PDH", time(0, 0)), ("PDL", time(0, 0)),
-                               ("ASIA H", time(3, 0)), ("ASIA L", time(3, 0)),
-                               ("LON H", time(8, 0)), ("LON L", time(8, 0))):
-                  formed_ms[label] = to_ms(datetime.combine(day, t, tzinfo=ET))
+              formed_ms = _formed_times(now)
               cand_defs = []
               cand_dir = {}
               for label in ("PDH", "PDL", "ASIA H", "ASIA L", "LON H", "LON L"):
@@ -3304,6 +3346,44 @@ jobs:
               make_card(candles, 4063.0, mon, "NY", "test", "", "", decisions=_dec)
               gcheck("tracker: the card hands its EXECUTE setup to the log",
                      any(x["stage"] == "EXEC" and x["label"] == "LIQZONE SHORT" for x in _dec))
+          
+              # --- Nov 11 2026 fixes: ORB expiry, session-level dates, news backoff ---
+              _o_am = build_levels(candles, datetime(2026, 11, 9, 9, 0, tzinfo=ET), "NY")
+              _o_pm = build_levels(candles, datetime(2026, 11, 9, 14, 0, tzinfo=ET), "NY")
+              gcheck("ORB: still a setup in the morning", _o_am[1] is not None)
+              gcheck("ORB: no ORB setup after 12:00 ET, the levels stay as TPs",
+                     _o_pm[1] is None and "ORB H" in [lab for _p, lab in _o_pm[0]])
+              _ft = _formed_times(datetime(2026, 11, 10, 1, 0, tzinfo=ET))
+              gcheck("formed: after midnight ASIA / LON date from yesterday",
+                     _ft["ASIA H"] == to_ms(datetime(2026, 11, 9, 3, 0, tzinfo=ET))
+                     and _ft["LON L"] == to_ms(datetime(2026, 11, 9, 8, 0, tzinfo=ET)))
+              gcheck("formed: PDH / PDL date from the end of the prior-day window",
+                     _ft["PDH"] == to_ms(datetime(2026, 11, 9, 18, 0, tzinfo=ET)))
+              gcheck("formed: morning levels date from today",
+                     _formed_times(datetime(2026, 11, 10, 9, 0, tzinfo=ET))["ASIA H"]
+                     == to_ms(datetime(2026, 11, 10, 3, 0, tzinfo=ET)))
+              _sf2, _hg, _nf = globals()["STATE_FILE"], globals()["http_get"], globals()["NEWS_FILTER"]
+              _tmp2 = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+              _tmp2.close()
+              os.unlink(_tmp2.name)
+              _calls = []
+          
+              def _boom(url):
+                  _calls.append(url)
+                  raise OSError("429 too many requests")
+              globals()["STATE_FILE"], globals()["http_get"], globals()["NEWS_FILTER"] = _tmp2.name, _boom, True
+              try:
+                  _nn = datetime(2026, 11, 11, 9, 0, tzinfo=ET)
+                  _e1 = news_events(_nn)
+                  _e2 = news_events(_nn + timedelta(minutes=10))
+                  _n_after_10 = len(_calls)
+                  news_events(_nn + timedelta(minutes=40))
+                  gcheck("news: no retry within 30 min of a failure, retry after",
+                         _e1[1] and _e2[1] and _n_after_10 == 1 and len(_calls) == 2)
+              finally:
+                  globals()["STATE_FILE"], globals()["http_get"], globals()["NEWS_FILTER"] = _sf2, _hg, _nf
+                  if os.path.exists(_tmp2.name):
+                      os.unlink(_tmp2.name)
           
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
