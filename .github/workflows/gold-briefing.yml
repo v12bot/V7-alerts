@@ -66,7 +66,6 @@ jobs:
           TRADELOCKER_DEMO_SERVER: ${{ secrets.TRADELOCKER_DEMO_SERVER }}
           PRICE_OFFSET: ${{ vars.PRICE_OFFSET }}
           ROOM_BASIS: ${{ vars.ROOM_BASIS }}
-          ROOM_BASIS: ${{ vars.ROOM_BASIS }}
           SWING_ALERTS: ${{ vars.SWING_ALERTS }}
           MODE: ${{ github.event.inputs.mode || 'briefing' }}
           FORCE: ${{ github.event.inputs.force || '0' }}
