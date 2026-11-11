@@ -1,1 +1,1 @@
-{"signature": "EXECUTE:none;PREPARE:VWAP BREAK SHORT;WATCH:WATCH LON H|4063.8", "date": "2026-11-11", "sent_at": "2026-11-11T03:39:31.636033-05:00", "swing_sig": "SWING:SWING SHORT|4032.8|4068.8|3", "swing_date": "2026-11-10"}
+{"signature": "EXECUTE:none;PREPARE:SELL ZONE|4062.3;WATCH:VWAP BREAK SHORT", "date": "2026-11-11", "sent_at": "2026-11-11T03:54:29.465317-05:00", "swing_sig": "SWING:SWING SHORT|4032.8|4068.8|3", "swing_date": "2026-11-10"}
