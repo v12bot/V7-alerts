@@ -1,1 +1,1 @@
-{"signature": "EXECUTE:none:ORB SHORT|score 2 < 3;neither VWAP nor MACD agrees;already ran 3.4R past entry;PREPARE:VWAP BREAK SHORT;WATCH:SELL ZONE|4049.6", "date": "2026-11-10", "sent_at": "2026-11-10T18:54:30.001474-05:00", "swing_sig": "SWING:SWING SHORT|4032.8|4068.8|3", "swing_date": "2026-11-10"}
+{"signature": "EXECUTE:RETEST LONG|4039.7|4029.7|3|TRADE;PREPARE:SELL ZONE|4049.6;WATCH:BUY ZONE|4032.8", "date": "2026-11-10", "sent_at": "2026-11-10T19:09:32.612456-05:00", "swing_sig": "SWING:SWING SHORT|4032.8|4068.8|3", "swing_date": "2026-11-10"}
