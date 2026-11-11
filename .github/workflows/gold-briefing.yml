@@ -71,103 +71,57 @@ jobs:
         run: |
           python - <<'PYEOF'
           #!/usr/bin/env python3
-          """Gold session briefing -> ntfy. NY scalp card, Sunday week-open card, Wednesday swing check.
+          """
+          Gold scalp briefing -> ntfy: the "GOLD SCALPS NY" card (all day while gold is
+          open), the "GOLD WEEK OPEN" Sunday card and the all-day "GOLD SWING" alert.
           
-          [Safe fixes ported Nov 8 2026 from the patched review: ntfy JSON publish;
-          4H bars aligned to the 17:00 ET forex day; weekly bars +3h; stale-sweep /
-          through-stop rejection; AT ENTRY NOW. TP ladder and 2-pt invalidation
-          floor deliberately NOT ported. Two more fixes ported the same day:
-          monitor state carries the date (yesterday's signature can't swallow
-          today's first NY card); retest formation times are timezone-safe.
-          Nov 8 2026: ORB H/L dropped from the Key levels list (they are the
-          08:00 15m candle's high/low, already known; they still print as ORB
-          LONG/SHORT setup entries and the ORB range line is unchanged).
-          Nov 8 2026: ASIA/LON H/L also dropped from the Key levels list
-          (still used internally for retest/LIQZONE setups; they print as
-          setup entries when they are a live decision).
-          Nov 8 2026: ORB range line removed from the card (no ORB mentions
-          except live trade decisions: the ORB breakout setup still prints
-          as EXECUTE/PREPARE/WATCH and in ALERTS when it is a trade).
-          Nov 8 2026: VWAP now anchored at the most recent 18:00 ET (his TradingView
-          Session VWAP restarts 18:05 ET), so it exists all day.
-          Nov 8 2026: plan setups (SELL/BUY ZONE at the 4H + nearest daily high/low,
-          VWAP BREAK) compete for EXECUTE and lead PREPARE/WATCH; a zone alert
-          always carries its NO SHORTS / NO LONGS invalidation alert.
-          Nov 8 2026: alerts only within 15 pts of price (ALERT_MAX_DIST); NO SHORTS /
-          NO LONGS only when 5+ pts from its own entry alert (INVAL_MIN_GAP). NY card
-          runs whenever gold is open (market_open), not in a fixed window; all-day
-          swing alert sends a GOLD SWING card when a 4H swing setup passes the gate;
-          failure notices throttled to 1/hour. The scheduled Wednesday 12:00 swing
-          card is gone (those runs now build NY cards; _swing_alert covers swings).
-          Nov 8 2026: scorecard mode added (MODE=scorecard sends the two test
-          cards in scorecard.txt via ntfy, one message each; manual runs only).
-          Nov 8 2026: zones from the nearest 4H/daily swings within 60 pts
-          (broken or not — a broken high keeps acting as resistance), paired
-          only when within 20 pts (ZONE_PAIR_MAX), so wide zones collapse to
-          the nearer level alone; Key levels list drops levels over 60 pts
-          from price (KEY_LEVEL_REACH — the W/D context line still prints
-          them); setups against the W/D/1H trend lose a point and rank below
-          with-trend setups (COUNTER-TREND); retest/sweep setups die when the
-          live price is already through their invalidation; swing invalidation
-          side now follows the direction (was a stale loop variable).
-          Nov 8 2026: the Sunday card gains the scalp decisions (EXECUTE /
-          PREPARE / WATCH + alerts) on Friday's session levels — no Sunday
-          ORB (thin weekend PAXG noise) and no VWAP BREAK (VWAP anchored 5
-          minutes ago is meaningless); the week-open levels stay on top and
-          the 4H swing section stays. Backtested, not just built (see
-          gold_sunday_card_backtest.py).
-          Nov 8 2026: a volatility read on the card (Vol: SQUEEZE / normal /
-          expanding from the last 4 candles' true range vs 14-bar ATR, plus a
-          spike flag when any of the last 3 candles is >= 2x ATR wide); SQUEEZE
-          flags a weak edge ("smaller size or skip" — backtested: squeeze
-          entries run about half the usual edge), EXPANDING is info only (its
-          entries test the same as NORMAL). Display only — it changes no setup,
-          gate, score or exit.
-          Nov 8 2026: a scalp setup no longer qualifies on room + volume alone —
-          VWAP or MACD must agree with the direction (need_trend; zone and VWAP
-          BREAK setups are exempt, they are his own entry method). LIQZONE entry
-          and invalidation are now chart units (were raw — a 6.97-pt error against
-          the live price at the current offset).
-          Nov 9 2026: price alignment. Every NY / Sunday card now prints WHEN its price
-          was sampled, the raw feed price and the offset added ("priced 21:54:07 ET ·
-          raw 4,111.63 · offset +6.97"), so a card can be compared with the TradeLocker
-          chart like for like (a 15-minute-old card looks like an offset error in a fast
-          market). The offset is per feed: TradeLocker 0 (the feed IS the chart), OANDA =
-          PRICE_OFFSET, fallbacks = PRICE_OFFSET_FALLBACK when set (else PRICE_OFFSET,
-          flagged on the card). feedcheck prints the OANDA bid / mid / ask and the sample
-          second. No setup, gate, score or exit changed.]
+          Card: NOW + trend context, then three decisions - EXECUTE (best qualified
+          setup), PREPARE and WATCH (the next two developing setups) - the TradingView
+          ALERTS for them, and the key levels. Prices are chart prices (feed + offset).
           
-          One short card before the New York session: prior trading day, Asia and
-          London highs/lows, the 8:00-8:15 ET opening range, session VWAP, sorted by
-          price with the distance from the current price. Plus a Sunday week-open
-          card with the last full session's levels, the scalp decisions
-          (EXECUTE / PREPARE / WATCH + alerts, Friday's levels, no Sunday ORB,
-          no VWAP BREAK) and a 4H swing section, and a
-          Wednesday midday swing check (4H setups, held days/weeks, stop 30-60 pts,
-          same gate as the scalp card: room >= 1R and score >= 3 — no 2:1 minimum).
-          At most 1 swing setup per send, so Sunday + Wednesday caps at 2/week.
+          Rules in force (Nov 2026)
+          - TRADE = score >= 3/5 and room >= 1R. Score = room (>= 2R: 2, >= 1R: 1) +
+            volume spike + VWAP agrees + MACD agrees; against the W/D/1H trend loses a
+            point. Scalp setups also need VWAP or MACD to agree (zone and VWAP BREAK
+            setups are his own method and are exempt).
+          - Stop = max(15m ATR, 10) pts, skipped when ATR > 15. Zones: stop at the zone
+            edge +/- 3, risk 10-15. The card shows R and points only, never dollars.
+          - TPs: the successive levels ahead (>= 3 pts apart, within MAX_TP_R of entry),
+            up to 4; the SELL / BUY ZONE entries count as levels, so a TP never sits
+            inside an opposing zone.
+          - Setups that wait for a 15m close (ORB, zones, VWAP BREAK, retests) say WAIT
+            FOR CLOSE and carry a max-chase limit. LIQZONE entries are already triggered.
+          - Alerts: at most 3, only within 15 pts of price, none for an entry price is
+            already at, NO SHORTS / NO LONGS only when 5+ pts from its entry. Each alert
+            line carries its setup score; qualified setups are listed first.
+          - Zones: nearest 4H / daily swings within 60 pts (broken or not), paired when
+            within 20. VWAP is anchored at the most recent 18:00 ET.
+          - News: high-impact USD events (weekly calendar) print a warning from 30 min
+            before to 15 min after. Fail-open: a failed fetch prints "news calendar
+            unavailable". NEWS_FILTER=0 switches it off.
+          - Outcome log (paper, no orders are placed): every EXECUTE card and every
+            listed alert is logged in gold-state.json and closed out from the later
+            15m candles. Breakouts (ORB, VWAP BREAK) trigger on a 15m close beyond the
+            entry; zone / retest setups on a touch and a close back; LIQZONE is filled
+            at once. The fill is the close of the trigger candle, so a close past the
+            max-chase limit is "skipped". A candle that touches both stop and target
+            counts as a stop. MODE=outcomes sends the summary by setup type.
+          - Feeds in order: TradeLocker demo, OANDA, then labelled fallbacks (Binance,
+            Bybit, PAXG), tried only when no earlier feed is fresh. The offset is per
+            feed; the card prints the sample time, raw price and offset. A feed whose
+            newest candle closed more than 30 min ago is skipped.
+          - Swing section (Sunday card, all-day GOLD SWING alert): 4H retest setups,
+            stop max(4H ATR, 30) capped at 60, same gate as the scalp card. Sunday has
+            no ORB and no VWAP BREAK.
           
-          Modes (MODE env var):
-            briefing   (default) build and send the card, inside the time window
-            feedcheck            compare every feed's price, so you can set PRICE_OFFSET
-            selftest             verify the maths on synthetic candles, send nothing
-            NY runs send only when EXECUTE, PREPARE or WATCH changed (state in
-            gold-state.json); forced runs always send.
-          
-          Feeds, tried in order. The first one that works prices the card; the card
-          always names the feed, so a fallback never passes silently.
-            1. TradeLocker demo - your execution price (only if demo secrets are set)
-            2. OANDA practice   - XAU/USD spot, the market reference
-            3. Binance XAUUSDT perpetual, 4. Bybit XAUUSDT perpetual,
-               5. Binance PAXGUSDT spot - fallbacks only, labelled as such
-          
-          Secrets: NTFY_TOPIC (required - treat the topic name like a password,
-          anyone who knows it can read your alerts), OANDA_API_TOKEN,
-          TRADELOCKER_DEMO_EMAIL / PASSWORD / SERVER (optional, demo only, never
-          live). Optional repo variables: PRICE_OFFSET (chart price minus feed
-          price). The card shows R multiples and point values only — no dollar
-          amounts, because the lot size varies trade to trade. Set the SWING_ALERTS
-          repo variable to 0 to switch the twice-weekly swing section off.
+          Modes (MODE env var): briefing (default), feedcheck, selftest, scorecard, outcomes.
+          NY runs send only when EXECUTE, PREPARE, WATCH or the news warning changed
+          (state in gold-state.json); forced runs always send.
+          Secrets: NTFY_TOPIC (required, treat it like a password), OANDA_API_TOKEN,
+          TRADELOCKER_DEMO_EMAIL / PASSWORD / SERVER (optional, demo only, never live).
+          Repo variables: PRICE_OFFSET (chart price minus OANDA price), PRICE_OFFSET_DATE
+          (YYYY-MM-DD it was last checked; the card warns after 7 days),
+          PRICE_OFFSET_FALLBACK, SWING_ALERTS (0 = swing alerts off), NEWS_FILTER.
           """
           import json
           import os
@@ -193,6 +147,10 @@ jobs:
           # (PAXG ran ~13 pts under OANDA on Nov 9 2026), so they get their own
           # optional PRICE_OFFSET_FALLBACK; unset = reuse PRICE_OFFSET and flag it.
           BASE_OFFSET = PRICE_OFFSET
+          # Optional repo variable: the date (YYYY-MM-DD) the offset was last checked
+          # with feedcheck. The card warns once it is older than OFFSET_MAX_AGE_DAYS.
+          OFFSET_DATE = os.environ.get("PRICE_OFFSET_DATE", "").strip()
+          OFFSET_MAX_AGE_DAYS = 7
           _fb_raw = os.environ.get("PRICE_OFFSET_FALLBACK", "").strip()
           PRICE_OFFSET_FALLBACK = float(_fb_raw) if _fb_raw else None
           
@@ -242,10 +200,28 @@ jobs:
           ZONE_PAIR_MAX = 20.0
           # A liquidity-sweep entry older than this many 15m bars is history, not a signal.
           MAX_SIGNAL_AGE_BARS = 8
+          # Targets farther than this many R from the entry are not scalp targets: they
+          # stay off the TP ladder so a distant level (the weekly low) cannot inflate
+          # the room score.
+          MAX_TP_R = 6.0
+          # A setup that waits for a 15m close can fill past its level. The card gives a
+          # max-chase limit: at most this many points, never past the 15-pt stop cap.
+          MAX_CHASE_PTS = 3.0
+          MAX_STOP_PTS = 15.0
+          # High-impact news (no entries until 15 min after): weekly calendar JSON,
+          # checked at most every NEWS_CACHE_MIN minutes. The warning runs from
+          # NEWS_BEFORE_MIN before the release to NEWS_AFTER_MIN after it.
+          NEWS_FILTER = os.environ.get("NEWS_FILTER", "1").strip() != "0"
+          NEWS_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+          NEWS_COUNTRY = "USD"
+          NEWS_IMPACTS = ("High",)
+          NEWS_BEFORE_MIN = 30
+          NEWS_AFTER_MIN = 15
+          NEWS_CACHE_MIN = 180
           
           MIN_CANDLES = 150
           CANDLE_MS = 15 * 60 * 1000
-          STALE_MINUTES_NY = 60  # newest complete candle must be this fresh (NY only)
+          STALE_MINUTES_NY = 30  # newest complete candle must be this fresh (NY only)
           
           OANDA_API_TOKEN = os.environ.get("OANDA_API_TOKEN", "").strip()
           OANDA_HOST = "https://api-fxpractice.oanda.com"
@@ -458,6 +434,10 @@ jobs:
                           "demo credentials / server not set" if name.startswith("TradeLocker")
                           else "OANDA_API_TOKEN not set"))
                       continue
+                  # A fresh primary feed (TradeLocker / OANDA) ends the search: do not
+                  # spend a request on a fallback feed that would never be used.
+                  if fallback and pick_active(results, kind, now_ms) is not None:
+                      break
                   r = _run_fetcher(name, fallback, fn)
                   results.append(r)
                   # Gap feeds (TradeLocker, OANDA) are always collected; the fallback
@@ -519,6 +499,81 @@ jobs:
               if pt is None or po is None:
                   return ""
               return "TradeLocker vs OANDA: %+.2f" % (pt - po)
+          
+          
+          # ============================ NEWS ============================
+          def parse_news(data):
+              """High-impact events for NEWS_COUNTRY from the weekly calendar JSON:
+              a sorted list of (datetime ET, title). Bad rows are skipped."""
+              out = []
+              for e in (data if isinstance(data, list) else []):
+                  try:
+                      if str(e.get("country", "")).upper() != NEWS_COUNTRY:
+                          continue
+                      if str(e.get("impact", "")).strip().title() not in NEWS_IMPACTS:
+                          continue
+                      t = _parse_oanda_time(str(e["date"]))
+                      if t.tzinfo is None:
+                          t = t.replace(tzinfo=ET)
+                      out.append((t.astimezone(ET), str(e.get("title", "news")).strip()[:40]))
+                  except Exception:  # noqa: BLE001 - one bad row must not kill the card
+                      continue
+              out.sort()
+              return out
+          
+          
+          def news_events(now):
+              """(events, error). At most one fetch per NEWS_CACHE_MIN, cached in the
+              state file; a failed fetch reuses the cache when there is one. Never
+              raises: an error string is returned and printed on the card."""
+              if not NEWS_FILTER:
+                  return [], None
+              st = _load_state()
+              cached = cache_age = None
+              try:
+                  cached = [(_parse_oanda_time(t).astimezone(ET), n) for t, n in st["news"]]
+                  cache_age = now - datetime.fromisoformat(st["news_at"])
+              except Exception:  # noqa: BLE001
+                  cached = cache_age = None
+              if cached is not None and cache_age < timedelta(minutes=NEWS_CACHE_MIN):
+                  return cached, None
+              try:
+                  data = http_get(NEWS_URL)
+                  if not isinstance(data, list) or not data:
+                      raise ValueError("unexpected calendar shape")
+                  ev = parse_news(data)
+                  _save_state(news=[[t.isoformat(), n] for t, n in ev],
+                              news_at=now.isoformat())
+                  return ev, None
+              except Exception as e:  # noqa: BLE001
+                  print("News fetch failed:", type(e).__name__, e)
+                  if cached is not None:
+                      return cached, None
+                  return [], "news calendar unavailable"
+          
+          
+          def news_window(events, now):
+              """(card line, signature key) while an event is from NEWS_BEFORE_MIN ahead
+              to NEWS_AFTER_MIN past, else None."""
+              for t, title in events:
+                  end = t + timedelta(minutes=NEWS_AFTER_MIN)
+                  if t - timedelta(minutes=NEWS_BEFORE_MIN) <= now <= end:
+                      return ("⚠ NEWS: USD %s %s ET — no entries until %s" % (
+                          title, t.strftime("%H:%M"), end.strftime("%H:%M")),
+                          "%s|%s" % (t.strftime("%m%d%H%M"), title))
+              return None
+          
+          
+          def news_for_card(now):
+              """(line, key) for the card, or None. Never raises."""
+              try:
+                  events, err = news_events(now)
+                  if err:
+                      return ("⚠ NEWS: %s — check the red-folder calendar yourself" % err, "ERR")
+                  return news_window(events, now)
+              except Exception as e:  # noqa: BLE001
+                  print("News check failed:", type(e).__name__, e)
+                  return None
           
           
           # ============================ LEVELS ============================
@@ -658,10 +713,10 @@ jobs:
               if state is None:
                   return None
               if state == "SQUEEZE":
-                  return "Vol: SQUEEZE x%.1f - weak edge, smaller size or skip" % ratio
+                  return "Range: SQUEEZE x%.1f - weak edge, smaller size or skip" % ratio
               if state == "EXPANDING":
-                  return "Vol: expanding x%.1f" % ratio
-              return "Vol: normal x%.1f" % ratio
+                  return "Range: expanding x%.1f" % ratio
+              return "Range: normal x%.1f" % ratio
           
           
           def counter_trend(direction, w_macd, d_macd, bias_1h):
@@ -812,8 +867,18 @@ jobs:
               TP line; its timeframe comes from s['invalid_tf'] ('15m' for scalps,
               '4H' for swings)."""
               out = [header]
-              out.append("Entry %s · SL %s · Risk %.1f" % (
-                  format(s["entry"], ",.1f"), format(s["stop"], ",.1f"), s["risk"]))
+              entry_line = "Entry %s · SL %s · Risk %.1f" % (
+                  format(s["entry"], ",.1f"), format(s["stop"], ",.1f"), s["risk"])
+              if s.get("pending"):
+                  # The fill comes after the 15m close, past the level: stop the chase
+                  # before the real risk passes the 15-pt cap.
+                  slack = min(MAX_CHASE_PTS, max(0.0, MAX_STOP_PTS - s["risk"]))
+                  if slack >= 0.5:
+                      lim = s["entry"] - slack if s["direction"] == "short" else s["entry"] + slack
+                      entry_line += " · Max chase %s" % format(lim, ",.1f")
+                  else:
+                      entry_line += " · No chase"
+              out.append(entry_line)
               if s["tps"]:
                   tp_line = "TPs " + "/".join(format(p, ",.1f") for p, r in s["tps"])
                   tp_line += " (%s)" % "/".join("%.1fR" % r for p, r in s["tps"])
@@ -1266,6 +1331,21 @@ jobs:
               return candles
           
           
+          def offset_note(now):
+              """A card warning when the offset in use was last checked too long ago.
+              Empty when no offset is added (TradeLocker feed) or no date is set."""
+              if not OFFSET_DATE or PRICE_OFFSET == 0:
+                  return ""
+              try:
+                  d = datetime.fromisoformat(OFFSET_DATE).date()
+              except ValueError:
+                  return "\n⚠ PRICE_OFFSET_DATE must read YYYY-MM-DD"
+              age = (now.date() - d).days
+              if age > OFFSET_MAX_AGE_DAYS:
+                  return "\n⚠ offset last checked %d days ago - rerun feedcheck" % age
+              return ""
+          
+          
           def _feed_line(feed_name, fallback_note, priced_at, raw_price):
               """The card's last lines: which feed, WHEN it was sampled, the raw feed
               price and the offset added to it. With the sample time on the card, a
@@ -1276,11 +1356,12 @@ jobs:
                   out += "\npriced %s ET · raw %s · offset %+.2f" % (
                       priced_at.astimezone(ET).strftime("%H:%M:%S"),
                       format(raw_price, ",.2f"), PRICE_OFFSET)
+                  out += offset_note(priced_at.astimezone(ET))
               return out
           
           
           def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=None,
-                        priced_at=None):
+                        priced_at=None, news=None, decisions=None):
               last_close = candles[-1]["c"]
               price = (live if live is not None else last_close) + PRICE_OFFSET
               items, orb, partial = build_levels(candles, now, kind)
@@ -1372,7 +1453,6 @@ jobs:
               d_macd = w_macd = None
               d_h = d_l = w_h = w_l = None
               d_above = None
-              d_below = None
               d_sw = []
               daily = _sane_daily(daily) if daily else None
               if daily:
@@ -1387,9 +1467,6 @@ jobs:
                   above = [s["price"] for s in d_uh if s["price"] > raw_price]
                   if above:
                       d_above = min(above) + PRICE_OFFSET
-                  below = [s["price"] for s in d_ul if s["price"] < raw_price]
-                  if below:
-                      d_below = max(below) + PRICE_OFFSET
                   wk = _weekly_bars(daily)
                   wk_line = _macd_line_series(wk)
                   w_macd = wk_line[-1] if wk_line else None
@@ -1429,6 +1506,18 @@ jobs:
                   levels[nm] = p + PRICE_OFFSET
                   raw_levels[nm] = p
           
+              # Plan geometry first: the SELL / BUY ZONE entries are also TP candidates
+              # for every setup (a target inside an opposing zone is not a real target).
+              _zo = lambda v: None if v is None else v + PRICE_OFFSET  # noqa: E731
+              _plan_geoms = plan_geometry(
+                  price, atr, vwap,
+                  _zo(near_swing(h4_sw, "H", raw_price, True)),
+                  _zo(near_swing(h4_sw, "L", raw_price, False)),
+                  _zo(near_swing(d_sw, "H", raw_price, True)),
+                  _zo(near_swing(d_sw, "L", raw_price, False)))
+              _zone_edges = [g["entry"] for g in _plan_geoms
+                             if g["label"] in ("SELL ZONE", "BUY ZONE")]
+          
               def build_setup(label, direction, entry, cond, ok=True, check_ran=True,
                               invalid=None, risk_override=None, age_bars=None,
                               extra_levels=None, live_check=False, need_trend=True):
@@ -1451,7 +1540,7 @@ jobs:
                       return None
                   risk = risk_override if risk_override is not None else max(atr, 10.0)
                   stop = entry - risk if direction == "long" else entry + risk
-                  ahead = sorted([p for p in (list(levels.values()) + list(extra_levels or []))
+                  ahead = sorted([p for p in (list(levels.values()) + list(extra_levels or []) + _zone_edges)
                                   if (p > entry if direction == "long" else p < entry)],
                                  reverse=(direction == "short"))
                   # Targets are zones, not lines: drop levels inside the entry zone
@@ -1468,7 +1557,9 @@ jobs:
                       _ahead.append(p)
                   ahead = _ahead
                   tps = []
-                  for p in ahead[:4]:
+                  # Only levels within MAX_TP_R of the entry are targets (nearest
+                  # first, up to 4): room is measured to the last target shown.
+                  for p in [x for x in ahead if abs(x - entry) <= MAX_TP_R * risk][:4]:
                       r = ((p - entry) / risk if direction == "long"
                            else (entry - p) / risk)
                       tps.append((p, r))
@@ -1545,7 +1636,8 @@ jobs:
                           "stop": stop, "risk": risk, "tps": tps, "room": room,
                           "score": score, "trade": not reasons, "reasons": reasons,
                           "why": " · ".join(why), "cond": cond, "invalid": invalid,
-                          "counter": against}
+                          "counter": against,
+                          "pending": not label.startswith("LIQZONE")}
           
               setups = []
               if orb:
@@ -1679,13 +1771,7 @@ jobs:
                   (h1_h[0] + PRICE_OFFSET) if h1_h else None,
                   (h1_l[0] + PRICE_OFFSET) if h1_l else None) if x is not None]
               plan_setups = []
-              _zone_h4_h = near_swing(h4_sw, "H", raw_price, True)
-              _zone_h4_l = near_swing(h4_sw, "L", raw_price, False)
-              _zone_d_h = near_swing(d_sw, "H", raw_price, True)
-              _zone_d_l = near_swing(d_sw, "L", raw_price, False)
-              _zo = lambda v: None if v is None else v + PRICE_OFFSET  # noqa: E731
-              for g in plan_geometry(price, atr, vwap, _zo(_zone_h4_h), _zo(_zone_h4_l),
-                                     _zo(_zone_d_h), _zo(_zone_d_l)):
+              for g in _plan_geoms:
                   s = build_setup(g["label"], g["direction"], g["entry"], g["cond"],
                                   check_ran=False, invalid=g["invalid"],
                                   risk_override=g["risk"], extra_levels=_extras,
@@ -1764,6 +1850,11 @@ jobs:
                   return (s["label"][len("WATCH "):]
                           if s["label"].startswith("WATCH ") else s["label"])
           
+              def _dev_header(s):
+                  # PREPARE / WATCH header: the score, and a flag when below the gate.
+                  return "%s %d/5%s (%s)" % (
+                      s["label"], s["score"], "" if s["trade"] else " · below gate", s["cond"])
+          
               lines = []
               lines.append("NOW %s%s · %s" % (format(price, ",.1f"),
                                               " (live)" if live is not None else " (close)",
@@ -1778,7 +1869,7 @@ jobs:
               ctx1 = ["W %s" % _arrow(w_macd), "D %s" % _arrow(d_macd)]
               if h1_macd is not None:
                   st = "(HH/HL)" if h1_struct == 1 else ("(LH/LL)" if h1_struct == -1 else "(mixed)")
-                  ctx1.append("1H %s %s" % ("↑" if h1_macd > 0 else "↓", st))
+                  ctx1.append("1H MACD%s %s" % ("↑" if h1_macd > 0 else "↓", st))
               else:
                   ctx1.append("1H n/a")
               if h4_uh or h4_ul:
@@ -1798,7 +1889,7 @@ jobs:
                       ctx2.append("D H %s / L %s" % (
                           format(d_h, ",.1f") if d_h is not None else "n/a",
                           format(d_l, ",.1f") if d_l is not None else "n/a"))
-                  if d_above is not None:
+                  if d_above is not None and (d_h is None or abs(d_above - d_h) >= 0.05):
                       ctx2.append("D next H above %s" % format(d_above, ",.1f"))
                   if ctx2:
                       lines.append(" · ".join(ctx2))
@@ -1806,6 +1897,8 @@ jobs:
               _vl = vol_line(_vs, _vr)
               if _vl:
                   lines.append(_vl)
+              if news:
+                  lines.append(news[0])
               lines.append("")
               # Colour for a markup level, per the Gold Daily Checklist colour key:
               # weekly purple, daily orange, 4H yellow, 1H blue, 15m green. The card
@@ -1893,8 +1986,14 @@ jobs:
               best = next((s for s in setups if s["trade"]), None)
               at_entry = best is not None and abs(price - best["entry"]) <= AT_ENTRY_PTS
               if best is not None:
-                  lines.append("⚡ EXECUTE — AT ENTRY NOW (%s)" % best["cond"] if at_entry
-                               else "⚡ EXECUTE")
+                  if at_entry and best.get("pending"):
+                      lines.append("⚡ EXECUTE — AT TRIGGER, WAIT FOR CLOSE (%s)" % best["cond"])
+                  elif at_entry:
+                      lines.append("⚡ EXECUTE — AT ENTRY NOW (%s)" % best["cond"])
+                  elif best.get("pending"):
+                      lines.append("⚡ EXECUTE — WAIT FOR TRIGGER (%s)" % best["cond"])
+                  else:
+                      lines.append("⚡ EXECUTE")
                   lines.extend(_setup_block(
                       best, "%s 🟢 TRADE · %d/5" % (best["label"], best["score"])))
               elif setups:
@@ -1919,15 +2018,26 @@ jobs:
               _cands = []
               if best is not None:
                   _cands.append((best["entry"], best["label"], best))
-              for _s in watch_setups[:2]:
+              # Qualified setups first, so they win the alert slots.
+              for _s in sorted(watch_setups[:2], key=lambda x: not x["trade"]):
                   _cands.append((_s["entry"], _lab_of(_s), _s))
               alert_levels = select_alerts(price, _cands)
+              if decisions is not None:
+                  # What this card showed, for the paper outcome log.
+                  if best is not None:
+                      decisions.append(_signal_of(best, "EXEC", now))
+                  for _p, _lab, _s in alert_levels:
+                      if "score" in _s and _s is not best:
+                          decisions.append(_signal_of(_s, "ALERT", now))
               if alert_levels:
-                  lines.append("🔔 ALERTS — set these %d in TradingView "
+                  lines.append("🔔 ALERTS — set %d in TradingView "
                                "(trigger prices of the decisions)" % len(alert_levels))
                   for i, (p, lab, _s) in enumerate(alert_levels, 1):
+                      _tag = " ".join(x for x in (
+                          _level_colour(lab),
+                          ("%d/5" % _s["score"]) if "score" in _s else "") if x)
                       lines.append("%d. %s  %-6s %-7s %+.0f" % (
-                          i, format(p, ",.1f"), lab, _level_colour(lab), p - price))
+                          i, format(p, ",.1f"), lab, _tag, p - price))
               elif at_entry:
                   lines.append("🔔 ALERTS — none needed, price is at the entry: "
                                "act on the EXECUTE card")
@@ -1940,18 +2050,14 @@ jobs:
               lines.append("")
               if watch_setups:
                   lines.append("🔶 PREPARE")
-                  lines.extend(_setup_block(
-                      watch_setups[0],
-                      "%s (%s)" % (watch_setups[0]["label"], watch_setups[0]["cond"])))
+                  lines.extend(_setup_block(watch_setups[0], _dev_header(watch_setups[0])))
               else:
                   lines.append("🔶 PREPARE — no developing setup")
               lines.append("")
               _nxt = None
               if len(watch_setups) > 1:
                   lines.append("👀 WATCH")
-                  lines.extend(_setup_block(
-                      watch_setups[1],
-                      "%s (%s)" % (watch_setups[1]["label"], watch_setups[1]["cond"])))
+                  lines.extend(_setup_block(watch_setups[1], _dev_header(watch_setups[1])))
               else:
                   # Next meaningful level: nearest markup level not already used
                   # by PREPARE. A break there opens a new opportunity.
@@ -2013,6 +2119,8 @@ jobs:
               else:
                   _sig_w = "WATCH:none"
               sig = ";".join((_sig_e, _sig_p, _sig_w))
+              if news:
+                  sig += ";NEWS:%s" % news[1]
               if kind == "SUNDAY":
                   # Week-open levels on top (the plain levels layout from the old
                   # Sunday card), then the scalp decisions.
@@ -2068,6 +2176,245 @@ jobs:
               return False
           
           
+          # ============================ OUTCOME TRACKER ============================
+          # Paper results of what the card showed (no orders are placed). Open signals
+          # and closed outcomes live in gold-state.json, so no workflow change is needed.
+          OUTCOME_KEEP = 200            # closed outcomes kept
+          SIGNAL_OPEN_MAX = 20          # open signals kept
+          LIVE_MAX_BARS = 24            # a filled setup is closed out after 6 hours
+          DEDUPE_MIN = 180              # a setup that just closed is not logged again
+          _FAMILIES = ("VWAP BREAK", "SELL ZONE", "BUY ZONE", "ORB", "RETEST",
+                       "LIQZONE", "WATCH")
+          
+          
+          def _floor15(ms):
+              return (ms // CANDLE_MS) * CANDLE_MS
+          
+          
+          def _is_breakout(label):
+              return label.startswith(("ORB", "VWAP BREAK"))
+          
+          
+          def _signal_of(s, stage, now):
+              """A setup dict from make_card as a JSON-safe signal record."""
+              return {"label": s["label"], "dir": s["direction"],
+                      "entry": round(s["entry"], 2), "stop": round(s["stop"], 2),
+                      "risk": round(s["risk"], 2),
+                      "tps": [round(p, 2) for p, _r in s["tps"]],
+                      "pending": bool(s.get("pending")),
+                      "invalid": ([round(s["invalid"][0], 2), s["invalid"][1]]
+                                  if s.get("invalid") else None),
+                      "score": s["score"], "trade": bool(s["trade"]),
+                      "counter": bool(s.get("counter")), "stage": stage,
+                      "t": to_ms(now), "off": PRICE_OFFSET}
+          
+          
+          def _init_signal(d):
+              """Start state: pending setups wait for their trigger; LIQZONE entries are
+              already triggered and fill at the entry price at once."""
+              if d["pending"]:
+                  d["state"] = "wait"
+                  d["last_t"] = _floor15(d["t"]) - CANDLE_MS   # the candle open at card time counts
+              else:
+                  d.update(state="live", fill=d["entry"], rr=d["risk"], fill_t=d["t"], hit=0,
+                           last_t=_floor15(d["t"]))            # first candle after the card
+              return d
+          
+          
+          def record_signals(decisions, now):
+              """Add this card's decisions to the open signals (skipping repeats of an
+              open signal or of one that closed within DEDUPE_MIN minutes)."""
+              if not decisions:
+                  return
+              st = _load_state()
+              sigs = st.get("signals") if isinstance(st.get("signals"), list) else []
+              outs = st.get("outcomes") if isinstance(st.get("outcomes"), list) else []
+              now_ms = to_ms(now)
+              changed = False
+              for d in decisions:
+                  def same(x):
+                      return (x.get("label") == d["label"] and x.get("dir") == d["dir"]
+                              and abs(x.get("entry", -1e9) - d["entry"]) <= 5.0)
+                  dup = next((x for x in sigs if same(x)), None)
+                  if dup is not None:
+                      if d["stage"] == "EXEC" and dup.get("stage") != "EXEC":
+                          dup["stage"] = "EXEC"
+                          changed = True
+                      continue
+                  if any(x.get("label") == d["label"] and x.get("dir") == d["dir"]
+                         and now_ms - x.get("t", 0) <= DEDUPE_MIN * 60 * 1000
+                         for x in outs):
+                      continue
+                  sigs.append(_init_signal(d))
+                  changed = True
+              if changed:
+                  _save_state(signals=sigs[-SIGNAL_OPEN_MAX:])
+          
+          
+          def _outcome(sig, kind, cl=None):
+              """Close a signal out. R is measured from the fill with the real risk (the
+              stop's distance from the fill). A signal that never filled scores 0."""
+              out = {k: sig[k] for k in ("label", "dir", "stage", "trade", "score",
+                                         "counter", "t") if k in sig}
+              out["outcome"] = kind
+              filled = sig.get("state") == "live"
+              out["triggered"] = filled
+              out["r_tp1"] = out["r_best"] = 0.0
+              if filled and sig.get("rr"):
+                  rr, fill, tps = sig["rr"], sig["fill"], sig["tps"]
+                  short = sig["dir"] == "short"
+          
+                  def r_of(p):
+                      return ((fill - p) if short else (p - fill)) / rr
+                  if kind == "stop":
+                      out["r_tp1"] = out["r_best"] = -1.0
+                  elif kind.startswith("tp") and tps:
+                      k = max(1, min(int(kind[2:]), len(tps)))
+                      out["r_tp1"], out["r_best"] = r_of(tps[0]), r_of(tps[k - 1])
+                  elif cl is not None:
+                      out["r_tp1"] = out["r_best"] = ((fill - cl) if short else (cl - fill)) / rr
+              out["r_tp1"], out["r_best"] = round(out["r_tp1"], 2), round(out["r_best"], 2)
+              return out
+          
+          
+          def resolve_signal(sig, candles):
+              """Advance one open signal through the completed candles after its
+              last_t. Returns the outcome dict when it is finished, else None (the
+              signal is updated in place)."""
+              off, short = sig["off"], sig["dir"] == "short"
+              for c in candles:
+                  if c["t"] <= sig["last_t"]:
+                      continue
+                  sig["last_t"] = c["t"]
+                  hi, lo, cl = c["h"] + off, c["l"] + off, c["c"] + off
+                  t_close = c["t"] + CANDLE_MS
+                  if sig["state"] == "wait":
+                      if t_close - sig["t"] > MAX_SIGNAL_AGE_BARS * CANDLE_MS:
+                          return _outcome(sig, "no_trigger")
+                      inv = sig.get("invalid")
+                      if inv and ((inv[1] == "above" and cl > inv[0])
+                                  or (inv[1] == "below" and cl < inv[0])):
+                          return _outcome(sig, "invalidated")
+                      e = sig["entry"]
+                      if _is_breakout(sig["label"]):
+                          trig = (cl < e) if short else (cl > e)
+                      else:
+                          trig = (hi >= e and cl < e) if short else (lo <= e and cl > e)
+                      if not trig:
+                          continue
+                      slack = min(MAX_CHASE_PTS, max(0.0, MAX_STOP_PTS - sig["risk"]))
+                      beyond = (e - cl) if short else (cl - e)
+                      rr = (sig["stop"] - cl) if short else (cl - sig["stop"])
+                      if rr <= 0 or rr > MAX_STOP_PTS or beyond > slack + 1e-9:
+                          return _outcome(sig, "skipped_chase")
+                      sig.update(state="live", fill=cl, rr=rr, fill_t=t_close, hit=0,
+                                 tps=[p for p in sig["tps"] if (p < cl if short else p > cl)])
+                      continue
+                  stop, tps, hit = sig["stop"], sig["tps"], sig["hit"]
+                  if (hi >= stop) if short else (lo <= stop):
+                      # Stop first when one candle touches both: the cautious reading.
+                      return _outcome(sig, "stop" if hit == 0 else "tp%d" % hit)
+                  while hit < len(tps) and ((lo <= tps[hit]) if short else (hi >= tps[hit])):
+                      hit += 1
+                  sig["hit"] = hit
+                  if tps and hit == len(tps):
+                      return _outcome(sig, "tp%d" % hit)
+                  if t_close - sig["fill_t"] >= LIVE_MAX_BARS * CANDLE_MS:
+                      return _outcome(sig, "tp%d" % hit if hit else "open", cl)
+              return None
+          
+          
+          def track_signals(candles, now):
+              """Resolve every open signal against the latest candles; save when
+              anything moved."""
+              st = _load_state()
+              sigs = st.get("signals")
+              if not isinstance(sigs, list) or not sigs:
+                  return
+              outs = st.get("outcomes") if isinstance(st.get("outcomes"), list) else []
+              keep, changed = [], False
+              for sig in sigs:
+                  before = (sig.get("last_t"), sig.get("state"), sig.get("hit"))
+                  try:
+                      res = resolve_signal(sig, candles)
+                  except Exception as e:  # noqa: BLE001 - one bad record must not stop the rest
+                      print("Outcome error:", type(e).__name__, e)
+                      res = _outcome(sig, "error")
+                  if res is not None:
+                      outs.append(res)
+                      changed = True
+                      print("Outcome: %s %s -> %s (R1 %+.2f, best %+.2f)" % (
+                          res.get("label"), res.get("dir"), res["outcome"],
+                          res["r_tp1"], res["r_best"]))
+                  else:
+                      keep.append(sig)
+                      if (sig.get("last_t"), sig.get("state"), sig.get("hit")) != before:
+                          changed = True
+              if changed:
+                  _save_state(signals=keep, outcomes=outs[-OUTCOME_KEEP:])
+          
+          
+          def _family(label):
+              for f in _FAMILIES:
+                  if label.startswith(f):
+                      return f
+              return label.split()[0] if label.split() else "?"
+          
+          
+          def _agg(rows):
+              """One line of results for a list of outcomes."""
+              fired = [o for o in rows if o.get("triggered")]
+              wins = [o for o in fired if str(o.get("outcome", "")).startswith("tp")]
+              txt = "%d sig, %d fired" % (len(rows), len(fired))
+              if fired:
+                  txt += " · win %d/%d (%d%%) · R1 %+.2f · best %+.2f" % (
+                      len(wins), len(fired), round(100.0 * len(wins) / len(fired)),
+                      sum(o["r_tp1"] for o in fired) / len(fired),
+                      sum(o["r_best"] for o in fired) / len(fired))
+              return txt
+          
+          
+          def outcome_stats(outs):
+              """Plain-text summary of the closed paper outcomes."""
+              outs = [o for o in outs if isinstance(o, dict) and o.get("outcome") != "error"]
+              if not outs:
+                  return ("No outcomes yet. Signals are logged when a card is sent and "
+                          "closed out as candles arrive.")
+              lines = ["ALL: " + _agg(outs), "", "By setup"]
+              fams = {}
+              for o in outs:
+                  fams.setdefault(_family(o.get("label", "?")), []).append(o)
+              for f, rows in sorted(fams.items(), key=lambda kv: -len(kv[1])):
+                  lines.append("%s: %s" % (f, _agg(rows)))
+              lines += ["", "Gate: " + "; ".join(
+                  "%s %s" % (n, _agg([o for o in outs if f(o)]))
+                  for n, f in (("3/5+", lambda o: o.get("trade")),
+                               ("below", lambda o: not o.get("trade"))))]
+              lines.append("Trend: " + "; ".join(
+                  "%s %s" % (n, _agg([o for o in outs if f(o)]))
+                  for n, f in (("with", lambda o: not o.get("counter")),
+                               ("counter", lambda o: o.get("counter")))))
+              lines.append("Stage: " + "; ".join(
+                  "%s %s" % (n, _agg([o for o in outs if o.get("stage") == n]))
+                  for n in ("EXEC", "ALERT")))
+              kinds = {}
+              for o in outs:
+                  kinds[o["outcome"]] = kinds.get(o["outcome"], 0) + 1
+              lines += ["", "Closed as: " + ", ".join(
+                  "%s %d" % (k, v) for k, v in sorted(kinds.items(), key=lambda kv: -kv[1]))]
+              lines.append("R1 = R if everything is taken at TP1; best = R at the best TP "
+                           "reached before the stop. A candle touching both stop and "
+                           "target counts as a stop.")
+              return "\n".join(lines)
+          
+          
+          def outcomes():
+              """MODE=outcomes: send the paper-outcome summary."""
+              outs = _load_state().get("outcomes")
+              text = outcome_stats(outs if isinstance(outs, list) else [])
+              return 0 if send_ntfy("GOLD OUTCOMES", text) else 1
+          
+          
           # ============================ MODES ============================
           def feedcheck():
               results = fetch_all_feeds()
@@ -2099,7 +2446,9 @@ jobs:
               lines.append("(screenshot with the clock). Gap = TL sell - OANDA bid,")
               lines.append("and TL buy - OANDA ask. Calm minutes only; 10+ readings")
               lines.append("across sessions; set PRICE_OFFSET to the median gap.")
-              lines.append("PRICE_OFFSET now: %+.2f" % BASE_OFFSET)
+              lines.append("PRICE_OFFSET now: %+.2f (checked %s)" % (
+                  BASE_OFFSET, OFFSET_DATE or "date not set"))
+              lines.append("When you change it, set PRICE_OFFSET_DATE to today (YYYY-MM-DD).")
               send_ntfy("GOLD FEED CHECK", "\n".join(lines), priority=3, tags="mag")
               return 0 if ok else 1
           
@@ -2224,9 +2573,19 @@ jobs:
               # Daily bars for the weekly/daily trend in the Context section. Best
               # effort: the card still builds without them.
               daily = fetch_daily_for(active["name"])
+              news = news_for_card(now) if kind == "NY" else None
+              decisions = [] if (kind == "NY" and not FORCE) else None
               title, body, sig = make_card(active["candles"], active["live"], now, kind,
                                            active["name"], fallback_note, gap_line(results),
-                                           daily=daily, priced_at=active.get("fetched_at"))
+                                           daily=daily, priced_at=active.get("fetched_at"),
+                                           news=news, decisions=decisions)
+              if decisions is not None:
+                  # Paper-track what the card showed. Never blocks the card.
+                  try:
+                      track_signals(active["candles"], now)
+                      record_signals(decisions, now)
+                  except Exception as e:  # noqa: BLE001
+                      print("Outcome tracking failed:", type(e).__name__, e)
               # NY cards send only when a decision changed (15-min monitor rule).
               # Sunday/SWING briefings always send; forced runs always send.
               # The state carries the date: yesterday's identical "nothing to trade"
@@ -2368,8 +2727,8 @@ jobs:
                   else:
                       print("PASS scalp card: %r present" % needle)
           
-              gcheck_card = ("Vol: " in body_ok)
-              print(("PASS " if gcheck_card else "FAIL ") + "card shows the Vol line")
+              gcheck_card = ("Range: " in body_ok)
+              print(("PASS " if gcheck_card else "FAIL ") + "card shows the Range line")
               if not gcheck_card:
                   ok = False
           
@@ -2550,7 +2909,7 @@ jobs:
               # become the daily/weekly swing high.
               daily.append(_row(d0 + timedelta(days=200), 4175.0, 9740.0, 4170.0, 4175.0))
               _, body_daily, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "", daily=daily)
-              for needle in ("D ↑", "D H 4,200.0 / L 4,146.0", "D next H above 4,200.0"):
+              for needle in ("D ↑", "D H 4,200.0 / L 4,146.0"):
                   if needle not in body_daily:
                       print("FAIL daily context: missing %r" % needle)
                       ok = False
@@ -2746,6 +3105,160 @@ jobs:
               gcheck("feed line without a sample time is the old one-liner",
                      "feed: test" in body_np and "priced " not in body_np)
           
+              # --- Offset age warning ---
+              _so, _sd, _sp = OFFSET_DATE, OFFSET_DATE, PRICE_OFFSET
+              _pa = datetime(2026, 11, 11, 8, 25, tzinfo=ET)
+              globals()["PRICE_OFFSET"] = 3.0
+              globals()["OFFSET_DATE"] = "2026-11-01"
+              gcheck("offset age: 10 days old warns", "10 days ago" in offset_note(_pa))
+              globals()["OFFSET_DATE"] = "2026-11-08"
+              gcheck("offset age: 3 days old is quiet", offset_note(_pa) == "")
+              globals()["OFFSET_DATE"] = "not a date"
+              gcheck("offset age: a bad date is called out", "YYYY-MM-DD" in offset_note(_pa))
+              globals()["OFFSET_DATE"] = "2026-11-01"
+              globals()["PRICE_OFFSET"] = 0.0
+              gcheck("offset age: no offset in use (TradeLocker feed) is quiet",
+                     offset_note(_pa) == "")
+              globals()["OFFSET_DATE"], globals()["PRICE_OFFSET"] = _so, _sp
+          
+              # --- News: parsing and the warning window (no network) ---
+              _ev = parse_news([
+                  {"title": "CPI", "country": "USD", "date": "2026-11-11T08:30:00-05:00",
+                   "impact": "High"},
+                  {"title": "Low thing", "country": "USD", "date": "2026-11-11T09:00:00-05:00",
+                   "impact": "Low"},
+                  {"title": "EUR thing", "country": "EUR", "date": "2026-11-11T09:00:00-05:00",
+                   "impact": "High"},
+                  {"title": "bad row"}])
+              gcheck("news: only the high-impact USD event is kept",
+                     len(_ev) == 1 and _ev[0][1] == "CPI")
+              _n = datetime(2026, 11, 11, 8, 30, tzinfo=ET)
+              gcheck("news: warning starts 30 min before",
+                     news_window(_ev, _n - timedelta(minutes=30)) is not None)
+              gcheck("news: no warning 31 min before",
+                     news_window(_ev, _n - timedelta(minutes=31)) is None)
+              gcheck("news: warning lasts until 15 min after",
+                     news_window(_ev, _n + timedelta(minutes=15)) is not None)
+              gcheck("news: no warning 16 min after",
+                     news_window(_ev, _n + timedelta(minutes=16)) is None)
+              _ln = news_window(_ev, _n - timedelta(minutes=6))
+              gcheck("news: line names the event and the all-clear time",
+                     _ln is not None and "CPI" in _ln[0] and "08:45" in _ln[0])
+              _, body_news, sig_news = make_card(candles, 4064.0, mon, "NY", "test", "", "",
+                                                 news=_ln)
+              gcheck("news: card shows the warning and the signature carries it",
+                     _ln is not None and _ln[0] in body_news and "NEWS:" in sig_news)
+          
+              # --- Pending setups carry a max-chase limit; the cap keeps risk <= 15 ---
+              _blk = _setup_block({"entry": 4042.7, "stop": 4052.7, "risk": 10.0,
+                                   "tps": [(4029.6, 1.3)], "invalid": (4042.7, "above"),
+                                   "why": "x", "pending": True, "direction": "short"}, "H")
+              gcheck("pending short: max chase 3 pts past the entry",
+                     any("Max chase 4,039.7" in x for x in _blk))
+              _blk = _setup_block({"entry": 4042.7, "stop": 4057.7, "risk": 15.0,
+                                   "tps": [(4029.6, 0.9)], "invalid": (4042.7, "above"),
+                                   "why": "x", "pending": True, "direction": "short"}, "H")
+              gcheck("pending short at 15 pts risk: no chase",
+                     any("No chase" in x for x in _blk))
+              gcheck("alert line carries the setup score", "LIQZONE SHORT 3/5" in body_far)
+          
+              # --- Outcome tracker (paper results) ---
+              import tempfile
+              T0 = _floor15(to_ms(datetime(2026, 11, 9, 9, 0, tzinfo=ET)))
+          
+              def _tc(i, o, h, l, c):
+                  return {"t": T0 + i * CANDLE_MS, "o": o, "h": h, "l": l, "c": c, "v": 1}
+          
+              def _sg(label="SELL ZONE", d="short", entry=100.0, stop=110.0, tps=(90.0, 80.0),
+                      pending=True, inv=(105.0, "above")):
+                  return _init_signal({
+                      "label": label, "dir": d, "entry": entry, "stop": stop,
+                      "risk": abs(stop - entry), "tps": list(tps), "pending": pending,
+                      "invalid": list(inv) if inv else None, "score": 4, "trade": True,
+                      "counter": False, "stage": "EXEC", "t": T0 + 5 * 60 * 1000, "off": 0.0})
+          
+              def _run(sig, cs):
+                  res = None
+                  for k in range(len(cs)):
+                      res = resolve_signal(sig, cs[:k + 1])
+                      if res:
+                          break
+                  return res
+          
+              r = _run(_sg(), [_tc(0, 99, 101, 98, 99), _tc(1, 99, 99.5, 89.5, 90),
+                               _tc(2, 90, 91, 79, 80)])
+              gcheck("tracker: zone short triggers on touch + close back, reaches TP2",
+                     r and r["outcome"] == "tp2" and abs(r["r_tp1"] - 0.82) < 0.01
+                     and abs(r["r_best"] - 1.73) < 0.01)
+              r = _run(_sg(), [_tc(0, 99, 101, 98, 99), _tc(1, 99, 111, 95, 100)])
+              gcheck("tracker: stop after the fill = -1R", r and r["outcome"] == "stop"
+                     and r["r_best"] == -1.0)
+              r = _run(_sg(), [_tc(0, 99, 101, 98, 99), _tc(1, 99, 111, 89, 100)])
+              gcheck("tracker: a candle touching stop and TP1 counts as a stop",
+                     r and r["outcome"] == "stop")
+              r = _run(_sg(), [_tc(0, 99, 101, 95, 96)])
+              gcheck("tracker: a close past the chase limit is skipped",
+                     r and r["outcome"] == "skipped_chase" and not r["triggered"])
+              r = _run(_sg(), [_tc(0, 101, 107, 100, 106)])
+              gcheck("tracker: a close through the invalidation kills it",
+                     r and r["outcome"] == "invalidated")
+              r = _run(_sg(label="ORB SHORT", inv=(100.0, "above")),
+                       [_tc(0, 99, 101, 98, 99), _tc(1, 99, 99, 89, 90), _tc(2, 90, 90, 79, 80)])
+              gcheck("tracker: ORB short triggers on a close below the entry",
+                     r and r["outcome"] == "tp2")
+              r = _run(_sg(label="ORB SHORT", inv=(100.0, "above")), [_tc(0, 99, 102, 98, 101)])
+              gcheck("tracker: ORB short closing back above the entry is invalidated",
+                     r and r["outcome"] == "invalidated")
+              r = _run(_sg(label="LIQZONE SHORT", pending=False, inv=None),
+                       [_tc(0, 100, 111, 99, 100), _tc(1, 100, 100, 89, 90),
+                        _tc(2, 90, 90, 79, 80)])
+              gcheck("tracker: LIQZONE fills at once; the card's own candle is not counted",
+                     r and r["outcome"] == "tp2" and abs(r["r_tp1"] - 1.0) < 0.01)
+              r = _run(_sg(), [_tc(i, 90, 91, 89, 90) for i in range(10)])
+              gcheck("tracker: a setup that never triggers expires", r and r["outcome"] == "no_trigger")
+              _lg = _run(_sg(d="long", entry=100.0, stop=90.0, tps=(110.0, 120.0),
+                             inv=(95.0, "below"), label="BUY ZONE"),
+                         [_tc(0, 101, 102, 99.5, 101), _tc(1, 101, 111, 100, 110)])
+              gcheck("tracker: a long zone fills, reaches TP1 and stays open for TP2",
+                     _lg is None)
+              _saved_sf = globals()["STATE_FILE"]
+              _tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+              _tmp.close()
+              os.unlink(_tmp.name)
+              globals()["STATE_FILE"] = _tmp.name
+              try:
+                  _now = datetime.fromtimestamp((T0 + 20 * 60 * 1000) / 1000, tz=timezone.utc).astimezone(ET)
+                  _d = {"label": "SELL ZONE", "dir": "short", "entry": 100.0, "stop": 110.0,
+                        "risk": 10.0, "tps": [90.0, 80.0], "pending": True,
+                        "invalid": [105.0, "above"], "score": 4, "trade": True,
+                        "counter": False, "stage": "ALERT", "t": T0 + 5 * 60 * 1000, "off": 0.0}
+                  record_signals([dict(_d)], _now)
+                  record_signals([dict(_d, stage="EXEC")], _now)
+                  _st = _load_state()
+                  gcheck("tracker: a repeated signal is logged once and upgraded to EXEC",
+                         len(_st["signals"]) == 1 and _st["signals"][0]["stage"] == "EXEC")
+                  track_signals([_tc(0, 99, 101, 98, 99), _tc(1, 99, 111, 95, 100)], _now)
+                  _st = _load_state()
+                  gcheck("tracker: a stopped signal moves to outcomes",
+                         not _st["signals"] and len(_st["outcomes"]) == 1
+                         and _st["outcomes"][0]["outcome"] == "stop")
+                  record_signals([dict(_d)], _now)
+                  gcheck("tracker: a setup that just closed is not logged again",
+                         not _load_state()["signals"])
+                  _txt = outcome_stats(_load_state()["outcomes"])
+                  gcheck("tracker: stats summarize by setup",
+                         "SELL ZONE: 1 sig, 1 fired" in _txt and "ALL:" in _txt)
+                  gcheck("tracker: stats with no outcomes say so",
+                         outcome_stats([]).startswith("No outcomes yet"))
+              finally:
+                  globals()["STATE_FILE"] = _saved_sf
+                  if os.path.exists(_tmp.name):
+                      os.unlink(_tmp.name)
+              _dec = []
+              make_card(candles, 4063.0, mon, "NY", "test", "", "", decisions=_dec)
+              gcheck("tracker: the card hands its EXECUTE setup to the log",
+                     any(x["stage"] == "EXEC" and x["label"] == "LIQZONE SHORT" for x in _dec))
+          
               print("SELFTEST PASS" if ok else "SELFTEST FAIL")
               return 0 if ok else 1
           
@@ -2787,6 +3300,8 @@ jobs:
                   return selftest()
               if MODE == "scorecard":
                   return scorecard()
+              if MODE == "outcomes":
+                  return outcomes()
               return briefing()
           
           
