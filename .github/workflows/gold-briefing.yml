@@ -65,6 +65,7 @@ jobs:
           TRADELOCKER_DEMO_PASSWORD: ${{ secrets.TRADELOCKER_DEMO_PASSWORD }}
           TRADELOCKER_DEMO_SERVER: ${{ secrets.TRADELOCKER_DEMO_SERVER }}
           PRICE_OFFSET: ${{ vars.PRICE_OFFSET }}
+          ROOM_BASIS: ${{ vars.ROOM_BASIS }}
           SWING_ALERTS: ${{ vars.SWING_ALERTS }}
           MODE: ${{ github.event.inputs.mode || 'briefing' }}
           FORCE: ${{ github.event.inputs.force || '0' }}
@@ -80,7 +81,8 @@ jobs:
           ALERTS for them, and the key levels. Prices are chart prices (feed + offset).
           
           Rules in force (Nov 2026)
-          - TRADE = score >= 3/5 and room >= 1R. Score = room (>= 2R: 2, >= 1R: 1) +
+          - TRADE = score >= 3/5 and room >= 1R (room measured per ROOM_BASIS: last
+            target by default, "tp2" / "tp1" are stricter). Score = room (>= 2R: 2, >= 1R: 1) +
             volume spike + VWAP agrees + MACD agrees; against the W/D/1H trend loses a
             point. Scalp setups also need VWAP or MACD to agree (zone and VWAP BREAK
             setups are his own method and are exempt).
@@ -204,6 +206,14 @@ jobs:
           # stay off the TP ladder so a distant level (the weekly low) cannot inflate
           # the room score.
           MAX_TP_R = 6.0
+          # Which target the ROOM score is measured to (Nov 11 2026). "last" = the last
+          # target shown (the original rule: a far 4th TP can earn the room points even
+          # when TP1 is under 1R). "tp2" = the 2nd target (one real step beyond TP1).
+          # "tp1" = the 1st target only (strictest). With a single target all three
+          # agree. Default "last" = no change to the tested rules; "tp2" is stricter
+          # (it drops the Monday self-test LIQZONE from 3/5 to 2/5). Set ROOM_BASIS as
+          # an env / repo variable (needs a line in the workflow) or edit the default.
+          ROOM_BASIS = os.environ.get("ROOM_BASIS", "last").strip().lower() or "last"
           # A setup that waits for a 15m close can fill past its level. The card gives a
           # max-chase limit: at most this many points, never past the 15-pt stop cap.
           MAX_CHASE_PTS = 3.0
@@ -848,6 +858,18 @@ jobs:
                           "invalid": (vwap - 0.25 * atr, "below"),
                           "inval_alert": None})
               return out
+          
+          
+          def _room_of(tps):
+              """Room in R for the score and the 1R gate, per ROOM_BASIS (see above).
+              tps is the ladder [(price, R), ...] nearest first; [] -> 0.0."""
+              if not tps:
+                  return 0.0
+              if ROOM_BASIS == "tp1" or len(tps) == 1:
+                  return tps[0][1]
+              if ROOM_BASIS == "tp2":
+                  return tps[1][1]
+              return tps[-1][1]
           
           
           def _clamp_stop_dist(dist, floor, cap):
@@ -1563,7 +1585,7 @@ jobs:
                       r = ((p - entry) / risk if direction == "long"
                            else (entry - p) / risk)
                       tps.append((p, r))
-                  room = tps[-1][1] if tps else 0.0
+                  room = _room_of(tps)
                   score = 0
                   if room >= 2.0:
                       score += 2
@@ -3161,6 +3183,29 @@ jobs:
               gcheck("pending short at 15 pts risk: no chase",
                      any("No chase" in x for x in _blk))
               gcheck("alert line carries the setup score", "LIQZONE SHORT 3/5" in body_far)
+          
+              # --- Room basis (Nov 11 2026): which target the room score uses ---
+              _lad = [(4029.6, 0.7), (4042.7, 2.0), (4048.5, 2.6), (4064.8, 4.3)]
+              _rb = ROOM_BASIS
+              globals()["ROOM_BASIS"] = "last"
+              gcheck("room basis last: 4.3R", abs(_room_of(_lad) - 4.3) < 1e-9)
+              globals()["ROOM_BASIS"] = "tp2"
+              gcheck("room basis tp2: 2.0R", abs(_room_of(_lad) - 2.0) < 1e-9)
+              globals()["ROOM_BASIS"] = "tp1"
+              gcheck("room basis tp1: 0.7R", abs(_room_of(_lad) - 0.7) < 1e-9)
+              for _b in ("last", "tp2", "tp1"):
+                  globals()["ROOM_BASIS"] = _b
+                  gcheck("room basis %s: one target = that target, none = 0" % _b,
+                         abs(_room_of([(4030.0, 1.4)]) - 1.4) < 1e-9 and _room_of([]) == 0.0)
+              globals()["ROOM_BASIS"] = "last"
+              _, body_last, _ = make_card(candles, 4063.0, mon, "NY", "test", "", "")
+              gcheck("room basis last keeps the Monday LIQZONE a 3/5 TRADE",
+                     "LIQZONE SHORT 🟢 TRADE · 3/5" in body_last)
+              globals()["ROOM_BASIS"] = "tp2"
+              _, body_tp2, _ = make_card(candles, 4063.0, mon, "NY", "test", "", "")
+              gcheck("room basis tp2: the same LIQZONE falls to 2/5 (no longer a TRADE)",
+                     "LIQZONE SHORT 🟢 TRADE" not in body_tp2)
+              globals()["ROOM_BASIS"] = _rb
           
               # --- Outcome tracker (paper results) ---
               import tempfile
