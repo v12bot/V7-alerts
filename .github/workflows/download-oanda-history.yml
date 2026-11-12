@@ -155,10 +155,14 @@ jobs:
               windows = 0
               while from_dt < end_dt:
                   to_dt = min(from_dt + timedelta(days=window_days), end_dt)
+                  # No `count`: OANDA rejects count together with from+to (400).
+                  # The from/to window already bounds the page (45 days ~ 3,000
+                  # bars, under the 5000 cap); the cap check below still halves
+                  # the window if a page ever comes back full.
                   url = ("%s/v3/instruments/%s/candles?granularity=%s&price=M"
-                         "&from=%s&to=%s&count=%d" % (
+                         "&from=%s&to=%s" % (
                              HOST, INSTRUMENT, GRANULARITY,
-                             _fmt(from_dt), _fmt(to_dt), PAGE_CAP))
+                             _fmt(from_dt), _fmt(to_dt)))
                   data = (fetcher(url) if fetcher is not None
                           else fetch_page(url, token))
                   candles = data.get("candles", [])
