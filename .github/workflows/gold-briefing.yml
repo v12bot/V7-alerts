@@ -1824,6 +1824,47 @@ jobs:
                           if s:
                               setups.append(s)
                           break
+              # Breakdown-continuation (candidate A): a session level (PDH/PDL,
+              # ASIA H/L, LON H/L) broken by the last 15m close beyond the level by
+              # >= 0.25 ATR, with the live price still holding beyond the level on
+              # the next (forming) bar. Enter at the live price; stop just beyond
+              # the level + 0.25 ATR. Stop distance over 15 pts skips the setup and
+              # the risk is floored at 10 pts, like LIQZONE. Scored like any other
+              # setup (same TRADE gate, same sort + 3-pt dedup).
+              if atr is not None:
+                  for label in ("PDH", "PDL", "ASIA H", "ASIA L", "LON H", "LON L"):
+                      if label not in raw_levels:
+                          continue
+                      lv = raw_levels[label]
+                      is_high = label.endswith("H")
+                      bc = candles[-1]["c"]
+                      if is_high:
+                          if bc < lv + 0.25 * atr:
+                              continue
+                          if raw_price <= lv:
+                              continue
+                          direction = "long"
+                          stop_raw = lv - 0.25 * atr
+                      else:
+                          if bc > lv - 0.25 * atr:
+                              continue
+                          if raw_price >= lv:
+                              continue
+                          direction = "short"
+                          stop_raw = lv + 0.25 * atr
+                      stop_dist = abs(raw_price - stop_raw)
+                      if stop_dist > 15.0:
+                          continue
+                      risk_ov = max(stop_dist, 10.0)
+                      inv = ((lv + PRICE_OFFSET, "below") if is_high
+                             else (lv + PRICE_OFFSET, "above"))
+                      s = build_setup("BREAKOUT LONG" if is_high else "BREAKOUT SHORT",
+                                      direction, price,
+                                      "15m close beyond %s, holding" % label,
+                                      invalid=inv, risk_override=risk_ov,
+                                      live_check=True)
+                      if s:
+                          setups.append(s)
               # His way of choosing entries: sell/buy zones at the 4H and daily
               # highs/lows and the VWAP break (see plan_geometry). They compete with
               # the other setups for EXECUTE, and the unqualified ones lead PREPARE
