@@ -278,7 +278,10 @@ jobs:
           def fetch_oanda():
               """XAU/USD M15 mid candles from OANDA practice. Returns (candles, live, err).
               price=MBA also returns bid and ask; the forming candle's bid/ask close is
-              kept in fetch_oanda.quote for feedcheck (candles themselves stay mid)."""
+              kept in fetch_oanda.quote for feedcheck (candles themselves stay mid).
+              Retries (Nov 12): 3 attempts, 2s then 5s backoff, on timeouts, connection
+              errors and 5xx only — a 4xx (bad token) will not heal on retry, so it
+              raises at once and the fallback chain proceeds."""
               fetch_oanda.quote = None
               url = (f"{OANDA_HOST}/v3/instruments/XAU_USD/candles"
                      "?granularity=M15&count=500&price=MBA")
@@ -286,8 +289,23 @@ jobs:
                   "Authorization": f"Bearer {OANDA_API_TOKEN}",
                   "Accept": "application/json",
               })
-              with urllib.request.urlopen(req, timeout=20) as resp:
-                  data = json.load(resp)
+              data = None
+              last_exc = None
+              for attempt in range(3):
+                  try:
+                      with urllib.request.urlopen(req, timeout=20) as resp:
+                          data = json.load(resp)
+                      break
+                  except urllib.error.HTTPError as e:
+                      if e.code < 500:
+                          raise
+                      last_exc = e
+                  except (urllib.error.URLError, TimeoutError, OSError) as e:
+                      last_exc = e
+                  if attempt < 2:
+                      _time.sleep(2 if attempt == 0 else 5)
+              if data is None:
+                  raise last_exc
               candles, live = [], None
               for c in data.get("candles", []):
                   mid = c.get("mid", {})
@@ -1431,6 +1449,11 @@ jobs:
           
           def make_card(candles, live, now, kind, feed_name, fallback_note, gap, daily=None,
                         priced_at=None, news=None, decisions=None):
+              # Loud fallback flag (Nov 12): when the card is priced from a fallback
+              # feed, say so on the FIRST line, not just the small feed line at the
+              # bottom. fallback_note is non-empty exactly on a fallback feed.
+              banner = ("⚠️ FALLBACK FEED — prices from %s, OANDA did not answer"
+                        % feed_name) if fallback_note else ""
               last_close = candles[-1]["c"]
               price = (live if live is not None else last_close) + PRICE_OFFSET
               items, orb, partial = build_levels(candles, now, kind)
@@ -1466,6 +1489,9 @@ jobs:
                   tf_line = " | ".join("%s %s" % (n, ("%+.1f%%" % v) if v is not None else "n/a")
                                        for n, v in tf)
                   lines = []
+                  if banner:
+                      lines.append(banner)
+                      lines.append("")
                   lines.append("NOW %s%s · %s" % (format(price, ",.1f"),
                                                   " (live)" if live is not None else " (close)",
                                                   tf_line))
@@ -2045,6 +2071,9 @@ jobs:
                       s["label"], s["score"], "" if s["trade"] else " · below gate", s["cond"])
           
               lines = []
+              if banner:
+                  lines.append(banner)
+                  lines.append("")
               lines.append("NOW %s%s · %s" % (format(price, ",.1f"),
                                               " (live)" if live is not None else " (close)",
                                               tf_line))
@@ -2308,6 +2337,9 @@ jobs:
               else:
                   _sig_w = "WATCH:none"
               sig = ";".join((_sig_e, _sig_p, _sig_w))
+              # Feed in the signature (Nov 12): an OANDA -> fallback flip sends a new
+              # card, so the banner actually reaches the phone when the feed changes.
+              sig += ";FEED:%s" % feed_name
               if news:
                   sig += ";NEWS:%s" % news[1]
               if kind == "SUNDAY":
@@ -2925,7 +2957,8 @@ jobs:
               # --- Monitor signature: the three decisions, deterministic ---
               want_sig = ("EXECUTE:LIQZONE SHORT|4063.0|4075.3|3|TRADE;"
                           "PREPARE:SELL ZONE|4090.0;"
-                          "WATCH:BUY ZONE|4027.8")
+                          "WATCH:BUY ZONE|4027.8;"
+                          "FEED:test")
               if sig_ok != want_sig:
                   print("FAIL signature: got %r, want %r" % (sig_ok, want_sig))
                   ok = False
@@ -3294,6 +3327,14 @@ jobs:
               _, body_np, _ = make_card(candles, 4064.0, mon, "NY", "test", "", "")
               gcheck("feed line without a sample time is the old one-liner",
                      "feed: test" in body_np and "priced " not in body_np)
+              _, body_fb, _ = make_card(candles, 4064.0, mon, "NY",
+                                        "Binance spot PAXGUSDT", " (fallback)", "")
+              gcheck("fallback feed is flagged on the first line of the card",
+                     body_fb.startswith("⚠️ FALLBACK FEED"))
+              _, body_ok, _ = make_card(candles, 4064.0, mon, "NY",
+                                       "OANDA XAU/USD", "", "")
+              gcheck("OANDA feed has no fallback banner",
+                     not body_ok.startswith("⚠️ FALLBACK FEED"))
           
               # --- Offset age warning ---
               _so, _sd, _sp = OFFSET_DATE, OFFSET_DATE, PRICE_OFFSET
