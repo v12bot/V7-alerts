@@ -1853,16 +1853,100 @@ jobs:
                           direction = "short"
                           stop_raw = lv + 0.25 * atr
                       stop_dist = abs(raw_price - stop_raw)
-                      if stop_dist > 15.0:
+                      if stop_dist > 30.0:
                           continue
                       risk_ov = max(stop_dist, 10.0)
                       inv = ((lv + PRICE_OFFSET, "below") if is_high
                              else (lv + PRICE_OFFSET, "above"))
+                      # Round-number TP candidates (D2): multiples of 25 in chart
+                      # units, in the trade direction, inside the MAX_TP_R window.
+                      # They join the normal TP ladder (nearest first, max 4) so a
+                      # BREAKOUT with no real level ahead can still measure room.
+                      rn = []
+                      _rn_step = 25.0
+                      _rn_lim = MAX_TP_R * risk_ov
+                      if direction == "long":
+                          _p = (price // _rn_step + 1) * _rn_step
+                          while _p - price <= _rn_lim:
+                              rn.append(_p)
+                              _p += _rn_step
+                      else:
+                          _p = (price // _rn_step) * _rn_step
+                          while price - _p <= _rn_lim:
+                              rn.append(_p)
+                              _p -= _rn_step
                       s = build_setup("BREAKOUT LONG" if is_high else "BREAKOUT SHORT",
                                       direction, price,
                                       "15m close beyond %s, holding" % label,
                                       invalid=inv, risk_override=risk_ov,
-                                      live_check=True)
+                                      extra_levels=rn, live_check=True)
+                      if s:
+                          setups.append(s)
+              # Double-top / double-bottom rejection (candidate F2): the last
+              # two confirmed 15m swing highs, the second within 5 pts of the first
+              # and not exceeding it by >= 0.25 ATR, the two bars >= 4 bars apart,
+              # followed by a 15m close back below the second peak minus 0.25 ATR
+              # (live price also below the second peak) -> short at live price,
+              # stop just above the HIGHER peak + 0.25 ATR. Mirror for bottoms.
+              if atr is not None:
+                  m15_sw = _swing_points(candles, bar_ms=15 * 60 * 1000)
+                  for _kind, _dir, _lab in (("H", "short", "DTOP SHORT"),
+                                            ("L", "long", "DBTM LONG")):
+                      _pts = [s for s in m15_sw if s["kind"] == _kind
+                              and s["conf_ms"] <= now_ms]
+                      if len(_pts) < 2:
+                          continue
+                      p1, p2 = _pts[-2], _pts[-1]
+                      if (p2["t"] - p1["t"]) // (15 * 60 * 1000) < 4:
+                          continue
+                      if _kind == "H":
+                          if p2["price"] < p1["price"] - 5.0:
+                              continue
+                          if p2["price"] > p1["price"] + 0.25 * atr:
+                              continue
+                          if candles[-1]["c"] > p2["price"] - 0.25 * atr:
+                              continue
+                          if raw_price >= p2["price"]:
+                              continue
+                          direction = "short"
+                          stop_raw = p1["price"] + 0.25 * atr
+                          inv = (p1["price"] + PRICE_OFFSET, "above")
+                      else:
+                          if p2["price"] > p1["price"] + 5.0:
+                              continue
+                          if p2["price"] < p1["price"] - 0.25 * atr:
+                              continue
+                          if candles[-1]["c"] < p2["price"] + 0.25 * atr:
+                              continue
+                          if raw_price <= p2["price"]:
+                              continue
+                          direction = "long"
+                          stop_raw = p1["price"] - 0.25 * atr
+                          inv = (p1["price"] + PRICE_OFFSET, "below")
+                      stop_dist = abs(raw_price - stop_raw)
+                      if stop_dist > 30.0:
+                          continue
+                      risk_ov = max(stop_dist, 10.0)
+                      rn = []
+                      _rn_step = 25.0
+                      _rn_lim = MAX_TP_R * risk_ov
+                      if direction == "long":
+                          _p = (price // _rn_step + 1) * _rn_step
+                          while _p - price <= _rn_lim:
+                              rn.append(_p)
+                              _p += _rn_step
+                      else:
+                          _p = (price // _rn_step) * _rn_step
+                          while price - _p <= _rn_lim:
+                              rn.append(_p)
+                              _p -= _rn_step
+                      s = build_setup(_lab, direction, price,
+                                      "double %s %.1f/%.1f, close back" % (
+                                          "top" if _kind == "H" else "bottom",
+                                          p1["price"] + PRICE_OFFSET,
+                                          p2["price"] + PRICE_OFFSET),
+                                      invalid=inv, risk_override=risk_ov,
+                                      extra_levels=rn, live_check=True)
                       if s:
                           setups.append(s)
               # His way of choosing entries: sell/buy zones at the 4H and daily
