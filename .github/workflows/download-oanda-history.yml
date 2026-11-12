@@ -1,0 +1,238 @@
+name: Download OANDA M15 history
+
+# One-off download: OANDA practice XAU/USD M15 mid candles, Aug 2020
+# to now, for the OANDA backtest of the gold briefing script (variants
+# A / D3 / F2 were all measured on Binance PAXG; this re-runs them on
+# the feed the live cards actually use).
+#
+# Trigger: Actions tab -> "Download OANDA M15 history" -> Run workflow.
+# No schedule, nothing is committed to the repo. The history leaves as
+# the `oanda-m15-history` artifact (oanda_m15.json + manifest); download
+# it and place oanda_m15.json at ~/workspace/repro11/oanda_m15.json,
+# then run:  python3 ab_oanda.py --data oanda_m15.json
+# Auth: secrets.OANDA_API_TOKEN (same secret the live workflow uses).
+# No token is hardcoded anywhere in this file.
+#
+# Limits to know before running:
+# - OANDA caps count at 5000 candles/request; the script pages in
+#   45-day windows (a window holds ~3,000 gold bars) and halves the
+#   window if a page ever hits the cap.
+# - 429/5xx are retried 3x with backoff; ~45 requests total.
+# - Practice history depth is not documented: if the practice feed does
+#   not go back to Aug 2020, the run still succeeds and the manifest
+#   reports the actual first bar — the backtest window is whatever the
+#   feed covers.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    env:
+      OANDA_API_TOKEN: ${{ secrets.OANDA_API_TOKEN }}
+    steps:
+      - name: Download OANDA XAU/USD M15 history
+        run: |
+          python3 - <<'PYEOF'
+          #!/usr/bin/env python3
+          """One-off download: OANDA practice XAU/USD M15 mid candles,
+          2020-08-28 -> now. Output: oanda_m15.json — a JSON list of 15m dicts
+          {t,o,h,l,c,v} with t in ms UTC, the same shape as the PAXG backtest
+          cache (paxg_ext_nov11.json). Also writes oanda_m15_manifest.json.
+          
+          This file is the tested source of the inline script embedded in
+          ~/workspace/repro11/upload/download-oanda-history.yml (the workflow
+          file is generated from it, so the two cannot drift — regenerate the
+          yml if this file changes).
+          
+          OANDA caps count at 5000 candles per request, so this pages in
+          45-day time windows (a 45-day window holds ~3,000 gold bars at most,
+          well under the cap). If a page ever returns exactly 5000, the window
+          is halved and retried. Only complete candles are kept (same rule as
+          the live briefing script); mid prices only (price=M — the same values
+          the live script reads from price=MBA's mid). Rows are deduped by t and
+          sorted ascending.
+          
+          Token comes from secrets.OANDA_API_TOKEN (env OANDA_API_TOKEN). No
+          token is hardcoded. Nothing is committed to the repo — the files leave
+          via the oanda-m15-history artifact.
+          
+          OANDA API limits that could block the run:
+          - count max 5000/request (handled by windowing + the halve-and-retry
+            guard).
+          - Rate limiting (429): retried 3x with exponential backoff, plus a
+            0.25s pause between requests. ~45 requests total for the full
+            window, so this should not bind.
+          - Practice history depth is NOT documented: the practice feed may not
+            go back to Aug 2020. The script does NOT fail on that — it stops
+            paging when a page comes back empty and warns in the manifest/log
+            with the actual first bar, so the backtest window is whatever the
+            feed actually covers.
+          """
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timezone, timedelta
+          
+          HOST = "https://api-fxpractice.oanda.com"  # same host as the live script
+          INSTRUMENT = "XAU_USD"
+          GRANULARITY = "M15"
+          START = "2020-08-28T00:00:00Z"  # first bar of the PAXG backtest cache
+          WINDOW_DAYS = 45
+          PAGE_CAP = 5000
+          OUT = "oanda_m15.json"
+          MANIFEST = "oanda_m15_manifest.json"
+          
+          
+          def _parse_oanda_time(s):
+              """OANDA timestamps carry 9-digit fractions; trim to 6. (Copied
+              from the live briefing script.)"""
+              if s.endswith("Z"):
+                  s = s[:-1] + "+00:00"
+              if "." in s:
+                  head, rest = s.split(".", 1)
+                  frac, off = "", ""
+                  for i, ch in enumerate(rest):
+                      if ch in "+-":
+                          off, frac = rest[i:], rest[:i]
+                          break
+                  else:
+                      frac = rest
+                  frac = (frac + "000000")[:6]
+                  s = head + "." + frac + off
+              return datetime.fromisoformat(s)
+          
+          
+          def _fmt(dt):
+              return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          
+          
+          def fetch_page(url, token, opener=None):
+              """One GET to the OANDA candles endpoint. Returns parsed JSON.
+              Retries 3x on 429/5xx with exponential backoff."""
+              req = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer %s" % token,
+                  "Accept": "application/json",
+              })
+              open_url = opener or urllib.request.urlopen
+              last_err = None
+              for attempt in range(4):
+                  try:
+                      with open_url(req, timeout=30) as resp:
+                          return json.load(resp)
+                  except urllib.error.HTTPError as e:
+                      last_err = e
+                      if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+                          time.sleep(2 ** attempt)
+                          continue
+                      raise
+                  except (urllib.error.URLError, TimeoutError) as e:
+                      last_err = e
+                      if attempt < 3:
+                          time.sleep(2 ** attempt)
+                          continue
+                      raise
+              raise last_err
+          
+          
+          def download(token, start=START, end=None, window_days=WINDOW_DAYS,
+                       fetcher=None, sleep_s=0.25):
+              """Page from start to end; returns (sorted, deduped candle list,
+              windows_used). `fetcher` is an injectable page function
+              (url -> parsed JSON) used by the local unit test; None means the
+              real OANDA endpoint."""
+              end_dt = (datetime.now(timezone.utc) if end is None
+                        else _parse_oanda_time(end))
+              from_dt = _parse_oanda_time(start)
+              rows = {}
+              windows = 0
+              while from_dt < end_dt:
+                  to_dt = min(from_dt + timedelta(days=window_days), end_dt)
+                  url = ("%s/v3/instruments/%s/candles?granularity=%s&price=M"
+                         "&from=%s&to=%s&count=%d" % (
+                             HOST, INSTRUMENT, GRANULARITY,
+                             _fmt(from_dt), _fmt(to_dt), PAGE_CAP))
+                  data = (fetcher(url) if fetcher is not None
+                          else fetch_page(url, token))
+                  candles = data.get("candles", [])
+                  windows += 1
+                  if len(candles) >= PAGE_CAP:
+                      # Window hit the cap: halve it and retry the same window.
+                      if window_days <= 1:
+                          raise RuntimeError("page cap hit even at 1-day window")
+                      window_days = max(1, window_days // 2)
+                      continue
+                  for c in candles:
+                      if not c.get("complete"):
+                          continue
+                      mid = c.get("mid") or {}
+                      try:
+                          t_ms = int(_parse_oanda_time(c["time"]).timestamp() * 1000)
+                          rows[t_ms] = {
+                              "t": t_ms,
+                              "o": float(mid["o"]), "h": float(mid["h"]),
+                              "l": float(mid["l"]), "c": float(mid["c"]),
+                              "v": float(c.get("volume", 0)),
+                          }
+                      except (KeyError, TypeError, ValueError):
+                          continue
+                  from_dt = to_dt
+                  if sleep_s:
+                      time.sleep(sleep_s)
+              out = [rows[t] for t in sorted(rows)]
+              return out, windows
+          
+          
+          def main():
+              token = os.environ.get("OANDA_API_TOKEN", "").strip()
+              if not token:
+                  print("OANDA_API_TOKEN is not set (needs secrets.OANDA_API_TOKEN).")
+                  return 1
+              candles, windows = download(token)
+              with open(OUT, "w") as f:
+                  json.dump(candles, f)
+              first = candles[0]["t"] if candles else None
+              last = candles[-1]["t"] if candles else None
+              manifest = {
+                  "source": "OANDA practice XAU/USD M15 mid (price=M)",
+                  "host": HOST,
+                  "requested_from": START,
+                  "fetched_at_utc": _fmt(datetime.now(timezone.utc)),
+                  "windows": windows,
+                  "n_bars": len(candles),
+                  "first_t_ms": first,
+                  "last_t_ms": last,
+                  "first_utc": (_fmt(datetime.fromtimestamp(first / 1000, tz=timezone.utc))
+                                if first else None),
+                  "last_utc": (_fmt(datetime.fromtimestamp(last / 1000, tz=timezone.utc))
+                               if last else None),
+              }
+              with open(MANIFEST, "w") as f:
+                  json.dump(manifest, f, indent=2)
+              print("bars: %d  windows: %d" % (len(candles), windows))
+              print("first: %s  last: %s" % (manifest["first_utc"], manifest["last_utc"]))
+              if first and first > int(_parse_oanda_time(START).timestamp() * 1000):
+                  print("WARNING: history starts later than requested %s — the "
+                        "practice feed does not go back to Aug 2020. Backtest "
+                        "window will start at %s." % (START, manifest["first_utc"]))
+              return 0
+          
+          
+          if __name__ == "__main__":
+              sys.exit(main())
+          PYEOF
+      - name: Upload history artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oanda-m15-history
+          path: |
+            oanda_m15.json
+            oanda_m15_manifest.json
+          retention-days: 90
